@@ -1,9 +1,8 @@
-
+use futures::executor::block_on;
+use futures::future::{self, Future};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use futures::executor::block_on;
-use futures::future::{self, Future};
 
 fn main() {
     println!("cargo:rerun-if-changed=src/shaders");
@@ -49,7 +48,9 @@ fn main() {
                 }
             }
         }
-        if c == 0 { panic!("No shaders found in src/shaders"); }
+        if c == 0 {
+            panic!("No shaders found in src/shaders");
+        }
     }
 
     // Wait for all tasks to complete

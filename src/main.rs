@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 use tao::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -6,7 +7,6 @@ use tao::{
     window::WindowBuilder,
 };
 use wgpu::util::DeviceExt;
-use std::sync::Arc;
 
 async fn run(event_loop: EventLoop<()>, window: Window) {
     let window = Arc::new(window);
@@ -14,7 +14,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     let bw = &window;
     let instance = wgpu::Instance::default();
-    let surface = unsafe { instance.create_surface( window.clone()) }.unwrap();
+    let surface = unsafe { instance.create_surface(window.clone()) }.unwrap();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
@@ -24,8 +24,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .await
         .expect("Failed to find an appropriate adapter");
 
-        let limits  = adapter.limits();
-        let (device, queue) = adapter
+    let limits = adapter.limits();
+    let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
@@ -174,9 +174,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
-            } => {
-                *control_flow = ControlFlow::Exit
-            },            
+            } => *control_flow = ControlFlow::Exit,
             Event::WindowEvent {
                 event: WindowEvent::Resized(new_size),
                 ..
@@ -187,20 +185,28 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 window.request_redraw();
             }
             Event::RedrawRequested(_) => {
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Compute Pass"),
+                });
 
-
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Compute Pass") });
-                
                 {
-                    let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+                    let mut compute_pass =
+                        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: None,
+                            timestamp_writes: None,
+                        });
                     compute_pass.set_pipeline(&compute_pipeline);
                     compute_pass.set_bind_group(0, &bind_group, &[]);
-                    compute_pass.dispatch_workgroups(config.width , config.height, 1);
+                    compute_pass.dispatch_workgroups(config.width, config.height, 1);
                 }
                 queue.submit(Some(encoder.finish()));
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Render Pass") });
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Render Pass"),
+                });
                 let frame = surface.get_current_texture().unwrap();
-                let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let view = frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
                 {
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Render Pass"),
