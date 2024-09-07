@@ -8,6 +8,6 @@ struct Dimensions {
 @fragment
 fn main(@location(0) tex_coords: vec2<f32>) -> @location(0) vec4<f32> {
     let pixel_coords = vec2<u32>(tex_coords * vec2<f32>(dimensions.dimensions));
-    let index = pixel_coords.y * dimensions.dimensions.x + pixel_coords.x;
+    let index = (dimensions.dimensions.y - pixel_coords.y) * dimensions.dimensions.x + pixel_coords.x;
     return output_buffer[index];
 }
