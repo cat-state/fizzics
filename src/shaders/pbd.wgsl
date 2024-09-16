@@ -1,13 +1,13 @@
 const time_step: f32 = 1.0 / 60.0;
 const gravity: vec3<f32> = vec3<f32>(0.0, -9.8, 0.0);
-const constraint_stiffness: f32 = 0.05;
-const rest_length: f32 = 1.0;
+const constraint_stiffness: f32 = 0.5;
+const rest_length: f32 = 0.5;
 const collision_damping: f32 = 0.01;
 const mouse_attraction_strength: f32 = 10.0;
-const num_cubes: i32 = 4;
+const num_cubes: i32 = 4*4*4;
 const vertices_per_cube: i32 = 8;
 const total_vertices: i32 = num_cubes * vertices_per_cube;
-const cube_collision_radius: f32 = 0.5;
+const cube_collision_radius: f32 = 0.33;
 
 struct Particle {
     x: vec3<f32>,

@@ -289,7 +289,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let voxels = voxel_cube(2);
+    let voxels = voxel_cube(4);
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
     dbg!( bytemuck::cast_slice::<Voxel, u8>(&voxels).len());
@@ -530,14 +530,15 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         ..Default::default()
                     });
 
-                    for _ in 0..1 { 
+                    for _ in 0..4 { 
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
                         compute_pass.set_bind_group(0, &compute_bind_group, &[]);
                         compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);
+                        compute_pass.set_pipeline(&collision_pipeline);
+                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+     
                     }
 
-                   compute_pass.set_pipeline(&collision_pipeline);
-                   compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                 }
                 queue.submit(Some(encoder.finish()));
 
