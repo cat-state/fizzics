@@ -188,8 +188,8 @@ fn handle_particle_collisions(@builtin(global_invocation_id) global_id: vec3<u32
             
             let impulse = jr * collision_normal;
             
-            p_i.x += impulse + overlap * 0.5 * collision_normal;
-            p_j.x -= impulse + overlap * 0.5 * collision_normal;
+            p_i.x += (impulse + overlap * 0.5 * collision_normal) * (1.0 - collision_damping);
+            p_j.x -= (impulse + overlap * 0.5 * collision_normal) * (1.0 - collision_damping);
             // data race
             particles[j] = p_j;
         }
