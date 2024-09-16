@@ -13,6 +13,7 @@ tokio = { version = "1.40", features = ["process", "rt"] }
 pollster = "0.3.0"
 bytemuck = "1.18.0"
 tao = "0.30.0"
+nalgebra = { version = "0.33.0", features = ["bytemuck"] }
 
 [build-dependencies]
 futures = "0.3.30"
