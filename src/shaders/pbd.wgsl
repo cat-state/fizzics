@@ -266,10 +266,18 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
 
 @compute @workgroup_size(1, 1, 1)
-fn apply_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>) {
+fn apply_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(num_workgroups) num_workgroups: vec3<u32>) {
     let constraint_index = global_id.x;
-    let n_constraints = arrayLength(&face_constraints) / 3;
-    let C = face_constraints[constraint_index + n_constraints * uniforms.constraint_phase];
+    let n_constraints = max(num_workgroups.x, max(num_workgroups.y, num_workgroups.z));
+    var phase: u32 = 0;
+    if (num_workgroups.x > 1) {
+        phase = u32(0);
+    } else if (num_workgroups.x > 2) {
+        phase = u32(1);
+    } else if (num_workgroups.x > 3) {
+        phase = u32(2);
+    }
+    let C = face_constraints[constraint_index + n_constraints * phase];
     var face_voxel = Voxel(array<Particle, 8>(
         particles[C.indices[0]],
         particles[C.indices[1]],

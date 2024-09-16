@@ -640,18 +640,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);     
                     }
                     compute_pass.set_pipeline(&face_constraints_pipeline);
-                    for phase in 0..3 {
-                        let uniforms = PBDUniforms {
-                            i_mouse: na::Vector4::<f32>::new(0.0, 0.0, 0.0, 0.0),
-                            i_resolution: na::Vector2::<f32>::new(size.width as f32, size.height as f32),
-                            i_frame: 0,
-                            constraint_phase: phase,
-                        };
+                    for _ in 0..4 {
+                        compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
                     
-                        queue.write_buffer(&pbd_uniforms_buffer, 0, bytemuck::cast_slice(&[uniforms]));
-                        compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);
-                    }
+                        compute_pass.dispatch_workgroups(1, flat_constraints.len() as u32 / 3u32, 1);
+                    
+                        compute_pass.dispatch_workgroups(1, 1, flat_constraints.len() as u32 / 3u32);
 
+                    }
 
                 }
                 queue.submit(Some(encoder.finish()));
