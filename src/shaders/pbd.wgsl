@@ -114,14 +114,21 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         let correction_next2 = (ideal_next2 - voxel.particles[next2].x) * constraint_stiffness;
         let correction_next3 = (ideal_next3 - voxel.particles[next3].x) * constraint_stiffness;
 
-        let total_correction = correction_next1 + correction_next2 + correction_next3;
-        let correction_self = -total_correction / 4.0;
+        // this has no transational bias but causes voxels to spin 
+        // let total_correction = correction_next1 + correction_next2 + correction_next3;
+        // let correction_self = -total_correction / 4.0;
 
-        voxel.particles[next1].x += correction_next1 * 0.25;
-        voxel.particles[next2].x += correction_next2 * 0.25;
-        voxel.particles[next3].x += correction_next3 * 0.25;
+        // voxel.particles[next1].x += correction_next1 * 0.25;
+        // voxel.particles[next2].x += correction_next2 * 0.25;
+        // voxel.particles[next3].x += correction_next3 * 0.25;
+        // voxel.particles[i].x += correction_self;
+
+        let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
+
+        voxel.particles[next1].x += correction_next1;
+        voxel.particles[next2].x += correction_next2;
+        voxel.particles[next3].x += correction_next3;
         voxel.particles[i].x += correction_self;
-
     }
     return voxel;
 }
