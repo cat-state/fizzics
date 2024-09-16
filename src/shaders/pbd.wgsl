@@ -1,8 +1,8 @@
 const time_step: f32 = 1.0 / 60.0;
 const gravity: vec3<f32> = vec3<f32>(0.0, -9.8, 0.0);
-const constraint_stiffness: f32 = 0.5;
+const constraint_stiffness: f32 = 0.3;
 const rest_length: f32 = 0.5;
-const collision_damping: f32 = 0.01;
+const collision_damping: f32 = 0.03;
 const mouse_attraction_strength: f32 = 10.0;
 const num_cubes: i32 = 4*4*4;
 const vertices_per_cube: i32 = 8;
@@ -77,7 +77,7 @@ fn slerp(start: vec3<f32>, end: vec3<f32>, t: f32) -> vec3<f32> {
 
 fn average_on_sphere(v1: vec3<f32>, v2: vec3<f32>, v3: vec3<f32>) -> vec3<f32> {
     let v12 = slerp(v1, v2, 0.5);
-    return slerp(v12, v3, 1.0 / 3.0);
+    return slerp(v12, v3, 1.0 / 2.0);
 }
 
 fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
@@ -99,12 +99,13 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         // u2 = average_on_sphere(u2, gs[2], gs[0]);
         // u3 = average_on_sphere(u3, gs[0], gs[1]);
 
-        var u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]);
-        var u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]);
-        var u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]);
-        u1 *= rest_length;
-        u2 *= rest_length;
-        u3 *= rest_length;
+        let u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]) * rest_length;
+        let u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]) * rest_length;
+        let u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]) * rest_length;
+
+        // let u1 = average_on_sphere(gs_0[0], gs_2[1], gs_1[2]) * rest_length;
+        // let u2 = average_on_sphere(gs_0[1], gs_1[0], gs_2[2]) * rest_length;
+        // let u3 = average_on_sphere(gs_0[2], gs_1[1], gs_2[0]) * rest_length;
 
         let ideal_next1 = voxel.particles[i].x + u1;
         let ideal_next2 = voxel.particles[i].x + u2;
@@ -114,13 +115,12 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         let correction_next2 = (ideal_next2 - voxel.particles[next2].x) * constraint_stiffness;
         let correction_next3 = (ideal_next3 - voxel.particles[next3].x) * constraint_stiffness;
 
-        // this has no transational bias but causes voxels to spin 
+        // this has no translational bias but causes voxels to spin 
         // let total_correction = correction_next1 + correction_next2 + correction_next3;
-        // let correction_self = -total_correction / 4.0;
-
-        // voxel.particles[next1].x += correction_next1 * 0.25;
-        // voxel.particles[next2].x += correction_next2 * 0.25;
-        // voxel.particles[next3].x += correction_next3 * 0.25;
+        // let correction_self = -total_correction / 3.0;
+        // voxel.particles[next1].x += correction_next1 * 0.33;
+        // voxel.particles[next2].x += correction_next2 * 0.33;
+        // voxel.particles[next3].x += correction_next3 * 0.33;
         // voxel.particles[i].x += correction_self;
 
         let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
@@ -165,6 +165,7 @@ fn handle_boundary_collisions(_particle: Particle) -> Particle {
 fn handle_particle_collisions(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let particle_index = global_id.x;
     var p_i = particles[particle_index];
+    let ori_pos = p_i.x;
     let total_particles = arrayLength(&particles);
     for (var j = particle_index + 1u; j <total_particles; j++) {
         if (particle_index / u32(vertices_per_cube) == j / u32(vertices_per_cube)) {
@@ -250,11 +251,10 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let global_particle_index = cube_index * u32(vertices_per_cube) + u32(i);
         var particle = voxel.particles[i];
         var new_pos = particle.x;
-        var velocity = particle.v;
         particle = handle_boundary_collisions(particle);
         particle.x = new_pos;
-        particle.v = (new_pos - particle.x) / time_step;
+        let new_vel = (new_pos - particle.x) / time_step;
+        particle.v = (new_vel - particle.v) * 0.99 + new_vel;
         particles[global_particle_index] = particle;
-        // particles[particle_index].x.y += time_step;
     }
 }

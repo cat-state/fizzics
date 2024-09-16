@@ -501,8 +501,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             },
             Event::RedrawRequested(_) => {
                 // Update camera position and view-projection matrix
-                //let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
-                let time = 0.0f64;
+                let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
                 let camera_x = 16.0 * time.cos() as f32;
                 let camera_z = 16.0 * time.sin() as f32;
                 let camera_y = 15.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
@@ -529,14 +528,13 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         label: Some("Compute Pass"),
                         ..Default::default()
                     });
-
-                    for _ in 0..4 { 
-                        compute_pass.set_pipeline(&voxel_constraints_pipeline);
-                        compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-                        compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);     
-                    }
+                    compute_pass.set_bind_group(0, &compute_bind_group, &[]);
                     compute_pass.set_pipeline(&collision_pipeline);
                     compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                    compute_pass.set_pipeline(&voxel_constraints_pipeline);
+                    for _ in 0..4 { 
+                        compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);     
+                    }
 
 
                 }
