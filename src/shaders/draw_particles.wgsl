@@ -1,7 +1,14 @@
 struct Particle {
     x: vec3<f32>,
+    mass: f32,
     v: vec3<f32>,
-};
+    _padding: f32,
+}
+
+struct Voxel {
+    particles: array<Particle, 8>,
+}
+
 
 struct Uniforms {
     view_projection: mat4x4<f32>,

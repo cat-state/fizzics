@@ -4,14 +4,16 @@ const constraint_stiffness: f32 = 0.05;
 const rest_length: f32 = 1.0;
 const collision_damping: f32 = 0.01;
 const mouse_attraction_strength: f32 = 10.0;
-const num_cubes: i32 = 1;
+const num_cubes: i32 = 4;
 const vertices_per_cube: i32 = 8;
 const total_vertices: i32 = num_cubes * vertices_per_cube;
-const cube_collision_radius: f32 = 0.4;
+const cube_collision_radius: f32 = 0.5;
 
 struct Particle {
     x: vec3<f32>,
+    mass: f32,
     v: vec3<f32>,
+    _padding: f32,
 }
 
 struct Voxel {
@@ -97,9 +99,9 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         // u2 = average_on_sphere(u2, gs[2], gs[0]);
         // u3 = average_on_sphere(u3, gs[0], gs[1]);
 
-        var u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]);
-        var u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]);
-        var u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]);
+        var u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2] + 1e-6);
+        var u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2] + 1e-6);
+        var u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0] + 1e-6);
         u1 *= rest_length;
         u2 *= rest_length;
         u3 *= rest_length;
@@ -153,7 +155,8 @@ fn handle_boundary_collisions(_particle: Particle) -> Particle {
 fn handle_particle_collisions(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let particle_index = global_id.x;
     var p_i = particles[particle_index];
-    for (var j = particle_index + 1u; j < u32(total_vertices); j++) {
+    let total_particles = arrayLength(&particles);
+    for (var j = particle_index + 1u; j <total_particles; j++) {
         if (particle_index / u32(vertices_per_cube) == j / u32(vertices_per_cube)) {
             continue;
         }
@@ -210,7 +213,6 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let cube_index = global_id.x;
     
     var voxel = get_voxel(cube_index);
-    
     let mouse_pos = vec3<f32>((uniforms.i_mouse.xy - 0.5 * uniforms.i_resolution) / uniforms.i_resolution.y, 0.0);
 
     var closest_index = -1;
@@ -224,7 +226,7 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
         var velocity = particle.v;
         var new_pos = curr_pos + velocity * time_step + gravity * time_step * time_step;
         particle.x = new_pos;
-        //particle = handle_boundary_collisions(particle);
+        particle = handle_boundary_collisions(particle);
         voxel.particles[i] = particle;
         // if (i == closest_index) {
         //     let to_mouse = mouse_pos - new_pos;
@@ -235,14 +237,14 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
     voxel = apply_gram_schmidt_constraint(voxel);
     
     for (var i = 0; i < vertices_per_cube; i++) {
-        let particle_index = cube_index * u32(vertices_per_cube) + u32(i);
+        let global_particle_index = cube_index * u32(vertices_per_cube) + u32(i);
         var particle = voxel.particles[i];
-        // var new_pos = particle.x;
-        // var velocity = particle.v;
-        // //particle = handle_boundary_collisions(particle);
-        // particle.x = new_pos;
-        // particle.v = (new_pos - particle.x) / time_step;
-        particles[particle_index] = particle;
+        var new_pos = particle.x;
+        var velocity = particle.v;
+        particle = handle_boundary_collisions(particle);
+        particle.x = new_pos;
+        particle.v = (new_pos - particle.x) / time_step;
+        particles[global_particle_index] = particle;
         // particles[particle_index].x.y += time_step;
     }
 }

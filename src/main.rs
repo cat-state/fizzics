@@ -16,7 +16,9 @@ use na::base::{DefaultAllocator};
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Particle {
     x: na::Vector3<f32>,
+    mass: f32,
     v: na::Vector3<f32>,
+    _padding: f32
 }
 
 
@@ -27,34 +29,40 @@ struct Voxel {
 }
 
 fn voxel_cube(size: u32) -> Vec<Voxel> {
-    let offsets = na::Vector3::<f32>::new(1.0, 0.0, 0.0);
-    let zero = na::Vector3::<f32>::zeros();
-    (0..size*size*size).map(|i| {
-        let x = i % size;
-        let y = (i / size) % size;
-        let z = i / (size * size);
-        na::Vector3::<f32>::new(x as f32, y as f32, z as f32)
-    }).map(|p|
-        Voxel {
-            particles: [
-                Particle { x:p, v: zero },
-                Particle { x: p + offsets.xyy(), v: zero },
-                Particle { x: p + offsets.yxy(), v: zero },
-                Particle { x: p + offsets.xxy(), v: zero },
-                Particle { x: p + offsets.yyx(), v: zero },
-                Particle { x: p + offsets.xyx(), v: zero },
-                Particle { x: p + offsets.yxx(), v: zero },
-                Particle { x: p + offsets.xxx(), v: zero },
-            ]
+    let offsets = [
+        na::Vector3::new(-1.0, -1.0, -1.0) * 0.5,
+        na::Vector3::new(1.0, -1.0, -1.0) * 0.5,
+        na::Vector3::new(1.0, 1.0, -1.0) * 0.5,
+        na::Vector3::new(-1.0, 1.0, -1.0) * 0.5,
+        na::Vector3::new(-1.0, -1.0, 1.0) * 0.5,
+        na::Vector3::new(1.0, -1.0, 1.0) * 0.5,
+        na::Vector3::new(1.0, 1.0, 1.0) * 0.5,
+        na::Vector3::new(-1.0, 1.0, 1.0) * 0.5,
+    ];
+    let zero = na::Vector3::zeros();
+    let center = na::Vector3::new(size as f32, size as f32, size as f32) * 0.5;
+
+    let mut voxels = Vec::new();
+    for x in 0..size {
+        for y in 0..size {
+            for z in 0..size {
+                let p = 2.0 * na::Vector3::new(x as f32, y as f32, z as f32);
+                let voxel = Voxel {
+                    particles: offsets.map(|offset| 
+                        Particle { 
+                            x: p + offset, 
+                            mass: 1.0,
+                            v: zero,
+                            _padding: 0.0,
+                        }
+                    )
+                };
+                voxels.push(voxel);
+            }
         }
-    )
-    .map(|mut v| {
-        v.particles.iter_mut().for_each(|p| {
-            p.x = p.x - na::Vector3::<f32>::new(size as f32 / 2.0, size as f32 / 2.0, size as f32 / 2.0);
-        });
-        v
-    })
-    .collect::<Vec<_>>()
+    }
+   
+    voxels
 }
 
 #[repr(C)]
@@ -205,7 +213,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::empty(),
+                required_features: wgpu::Features::empty().union(wgpu::Features::POLYGON_MODE_LINE),
                 required_limits: limits,
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
             },
@@ -281,7 +289,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let voxels = voxel_cube(1);
+    let voxels = voxel_cube(2);
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
     dbg!( bytemuck::cast_slice::<Voxel, u8>(&voxels).len());
@@ -493,10 +501,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             },
             Event::RedrawRequested(_) => {
                 // Update camera position and view-projection matrix
-                let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f32();
-                let camera_x = 10.0 * time.cos();
-                let camera_z = 10.0 * time.sin();
-                let camera_y = 5.0 + 2.0 * (time * 0.5).sin();
+                //let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+                let time = 0.0f64;
+                let camera_x = 10.0 * time.cos() as f32;
+                let camera_z = 10.0 * time.sin() as f32;
+                let camera_y = 5.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
                 let view = na::Isometry3::look_at_rh(
                     &na::Point3::new(camera_x, camera_y, camera_z),
                     &na::Point3::new(0.0, 0.0, 0.0),
@@ -527,8 +536,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);
                     }
 
-//                    compute_pass.set_pipeline(&collision_pipeline);
-  //                  compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                   compute_pass.set_pipeline(&collision_pipeline);
+                   compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                 }
                 queue.submit(Some(encoder.finish()));
 
