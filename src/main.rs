@@ -85,74 +85,88 @@ impl MeshVertex {
     }
 }
 
-fn sphere_mesh(radius: f32, subdivisions: usize) -> Vec<MeshVertex> {
-    let mut square = vec![
-        na::Vector3::new(-1.0f32, 1.0, 1.0),
-        na::Vector3::new(1.0, 1.0, 1.0),
-        na::Vector3::new(1.0, -1.0, 1.0),
-        na::Vector3::new(-1.0, 1.0, 1.0),
-    ];
-    for i in 0..subdivisions {
-        let mut new_square = Vec::new();
-        for subsquares in square.chunks(4) {
-            let (tl, tr, br, bl) = (subsquares[0], subsquares[1], subsquares[2], subsquares[3]);
-            let center = (tl + tr + br + bl) / 4.0f32;
-            let ct = (tl + tr) / 2.0f32;
-            let cl = (tl + bl) / 2.0f32;
-            let cr = (tr + br) / 2.0f32;
-            let cb = (bl + br) / 2.0f32;
-            new_square.push(tl);
-            new_square.push(ct);
-            new_square.push(center);
-            new_square.push(cl);
+fn icosahedron_mesh(radius: f32) -> Vec<MeshVertex> {
+    let t = (1.0 + 5.0_f32.sqrt()) / 2.0;
+    let scale = 1.0 / (1.0 + t * t).sqrt();
 
-            new_square.push(ct);
-            new_square.push(tr);
-            new_square.push(cr);
-            new_square.push(center);
-
-            new_square.push(center);
-            new_square.push(cr);
-            new_square.push(br);
-            new_square.push(cb);
-
-            new_square.push(cl);
-            new_square.push(center);
-            new_square.push(cb);
-            new_square.push(bl);
-        }
-        square = new_square;
-    }
-
-    let mut triangulated_square = Vec::new();
-    for s in square.chunks(4) {
-        let (tl, tr, br, bl) = (s[0], s[1], s[2], s[3]);
-        triangulated_square.extend([bl, tr, tl, tr, bl, br]);
-    }
-
-    // Create a cube using the triangulated square as a face with rotations
-    let mut cube_vertices = Vec::new();
-    let rotations = [
-        na::Rotation3::identity(),
-        // na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f32::consts::PI),
-        na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f32::consts::PI),
-        // na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), -std::f32::consts::FRAC_PI_2),
-        // na::Rotation3::from_axis_angle(&na::Vector3::x_axis(), -std::f32::consts::FRAC_PI_2),
-        // na::Rotation3::from_axis_angle(&na::Vector3::x_axis(), std::f32::consts::FRAC_PI_2),
+    let vertices = [
+        na::Vector3::new(t, 1.0, 0.0) * scale,
+        na::Vector3::new(-t, 1.0, 0.0) * scale,
+        na::Vector3::new(t, -1.0, 0.0) * scale,
+        na::Vector3::new(-t, -1.0, 0.0) * scale,
+        na::Vector3::new(1.0, 0.0, t) * scale,
+        na::Vector3::new(1.0, 0.0, -t) * scale,
+        na::Vector3::new(-1.0, 0.0, t) * scale,
+        na::Vector3::new(-1.0, 0.0, -t) * scale,
+        na::Vector3::new(0.0, t, 1.0) * scale,
+        na::Vector3::new(0.0, -t, 1.0) * scale,
+        na::Vector3::new(0.0, t, -1.0) * scale,
+        na::Vector3::new(0.0, -t, -1.0) * scale,
     ];
 
-    for rotation in rotations.iter() {
-        cube_vertices.extend(triangulated_square.iter().map(|v| rotation * v));
-    }
+    let triangles = [
+        [0, 8, 4], [0, 5, 10], [2, 4, 9], [2, 11, 5], [1, 6, 8],
+        [1, 10, 7], [3, 9, 6], [3, 7, 11], [0, 10, 8], [1, 8, 10],
+        [2, 9, 11], [3, 11, 9], [4, 2, 0], [5, 0, 2], [6, 1, 3],
+        [7, 3, 1], [8, 6, 4], [9, 4, 6], [10, 5, 7], [11, 7, 5],
+    ];
 
+    triangles.iter().flat_map(|&[a, b, c]| {
+        let va = vertices[a] * radius;
+        let vb = vertices[b] * radius;
+        let vc = vertices[c] * radius;
+        let normal = (vb - va).cross(&(vc - va)).normalize();
 
-    cube_vertices.iter()
-    .map(|v| MeshVertex { position: (v).normalize() * radius, normal: (v).normalize() }).collect()
+        [
+            MeshVertex { position: va, normal },
+            MeshVertex { position: vb, normal },
+            MeshVertex { position: vc, normal },
+        ]
+    }).collect()
 }
 
-fn normalize(v: na::Vector3<f32>, scale: f32) -> na::Vector3<f32> {
-    v.normalize() * scale
+fn subdivide_mesh(mesh: Vec<MeshVertex>) -> Vec<MeshVertex> {
+    mesh.chunks(3).flat_map(|triangle| {
+        let a = triangle[0].position;
+        let b = triangle[1].position;
+        let c = triangle[2].position;
+
+        let ab = (a + b) / 2.0;
+        let bc = (b + c) / 2.0;
+        let ca = (c + a) / 2.0;
+
+        let normal = (ab - a).cross(&(bc - a)).normalize();
+
+        [
+            MeshVertex { position: a, normal },
+            MeshVertex { position: ab, normal },
+            MeshVertex { position: ca, normal },
+
+            MeshVertex { position: ab, normal },
+            MeshVertex { position: b, normal },
+            MeshVertex { position: bc, normal },
+
+            MeshVertex { position: bc, normal },
+            MeshVertex { position: c, normal },
+            MeshVertex { position: ca, normal },
+
+            MeshVertex { position: ab, normal },
+            MeshVertex { position: bc, normal },
+            MeshVertex { position: ca, normal },
+        ].into_iter()
+    }).collect()
 }
+
+
+fn icosahedron_sphere(radius: f32, subdivisions: u32) -> Vec<MeshVertex> {
+    let mesh = (0..subdivisions).fold(icosahedron_mesh(radius), |mesh, _| subdivide_mesh(mesh));
+    mesh.iter().map(|v| {
+        let normal = v.position.normalize();
+        MeshVertex { position: normal * radius, normal }
+    }).collect()
+}
+
+
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -210,11 +224,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/draw_particles.wgsl").into()),
     });
 
-    let sphere_mesh = sphere_mesh(0.5, 4);
-
+    let ico_mesh = icosahedron_sphere(0.4, 1);
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Sphere Mesh Vertex Buffer"),
-        contents: bytemuck::cast_slice(&sphere_mesh),
+        contents: bytemuck::cast_slice(&ico_mesh),
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
     });
 
@@ -268,7 +281,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let voxels = voxel_cube(3);
+    let voxels = voxel_cube(1);
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
     dbg!( bytemuck::cast_slice::<Voxel, u8>(&voxels).len());
@@ -379,7 +392,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .unwrap();
     surface.configure(&device, &config);
 
-    let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+    let mut depth_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Depth Texture"),
         size: wgpu::Extent3d {
             width: config.width,
@@ -394,7 +407,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         view_formats: &[],
     });
 
-    let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Render Pipeline"),
@@ -454,6 +467,24 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             } => {
                 config.width = new_size.width;
                 config.height = new_size.height;
+
+                depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Depth Texture"),
+                    size: wgpu::Extent3d {
+                        width: config.width,
+                        height: config.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Depth32Float,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+            
+                depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    
                 surface.configure(&device, &config);
                 window.request_redraw();
             },
@@ -489,12 +520,15 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         label: Some("Compute Pass"),
                         ..Default::default()
                     });
-                    compute_pass.set_pipeline(&voxel_constraints_pipeline);
-                    compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-                    compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);
 
-                    compute_pass.set_pipeline(&collision_pipeline);
-                    compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                    for _ in 0..1 { 
+                        compute_pass.set_pipeline(&voxel_constraints_pipeline);
+                        compute_pass.set_bind_group(0, &compute_bind_group, &[]);
+                        compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);
+                    }
+
+//                    compute_pass.set_pipeline(&collision_pipeline);
+  //                  compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                 }
                 queue.submit(Some(encoder.finish()));
 
@@ -561,7 +595,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     render_pass.set_pipeline(&render_pipeline);
                     render_pass.set_bind_group(0, &render_bind_group, &[]);
                     render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                    render_pass.draw(0..sphere_mesh.len() as u32, 0..num_particles as u32);
+                    render_pass.draw(0..ico_mesh.len() as u32, 0..num_particles as u32);
                 }
 
                 queue.submit(Some(encoder.finish()));

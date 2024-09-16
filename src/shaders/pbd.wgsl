@@ -1,13 +1,13 @@
 const time_step: f32 = 1.0 / 60.0;
 const gravity: vec3<f32> = vec3<f32>(0.0, -9.8, 0.0);
-const constraint_stiffness: f32 = 0.01;
+const constraint_stiffness: f32 = 0.05;
 const rest_length: f32 = 1.0;
 const collision_damping: f32 = 0.01;
 const mouse_attraction_strength: f32 = 10.0;
-const num_cubes: i32 = 3;
+const num_cubes: i32 = 1;
 const vertices_per_cube: i32 = 8;
 const total_vertices: i32 = num_cubes * vertices_per_cube;
-const cube_collision_radius: f32 = 0.19;
+const cube_collision_radius: f32 = 0.4;
 
 struct Particle {
     x: vec3<f32>,
@@ -89,15 +89,17 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         let edge2 = voxel.particles[next2].x - voxel.particles[i].x;
         let edge3 = voxel.particles[next3].x - voxel.particles[i].x;
 
-        let gs = gram_schmidt(edge1, edge2, edge3);
-        var u1 = gs[0];
-        var u2 = gs[1];
-        var u3 = gs[2];
+        let gs_0 = gram_schmidt(edge1, edge2, edge3);
+        let gs_1 = gram_schmidt(edge2, edge3, edge1);
+        let gs_2 = gram_schmidt(edge3, edge1, edge2);
 
-        u1 = average_on_sphere(u1, gs[1], gs[2]);
-        u2 = average_on_sphere(u2, gs[2], gs[0]);
-        u3 = average_on_sphere(u3, gs[0], gs[1]);
+        // u1 = average_on_sphere(u1, gs[1], gs[2]);
+        // u2 = average_on_sphere(u2, gs[2], gs[0]);
+        // u3 = average_on_sphere(u3, gs[0], gs[1]);
 
+        var u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]);
+        var u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]);
+        var u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]);
         u1 *= rest_length;
         u2 *= rest_length;
         u3 *= rest_length;
@@ -192,7 +194,7 @@ fn handle_particle_collisions(@builtin(global_invocation_id) global_id: vec3<u32
 
 fn find_closest_vertex(mouse_pos: vec3<f32>, voxel: ptr<function, Voxel>) -> i32 {
     var min_dist = distance(mouse_pos, (*voxel).particles[0].x);
-    var closest_index = 0;
+    var closest_index = -1;
     for (var j = 0; j < vertices_per_cube; j++) {
         let dist = distance(mouse_pos, (*voxel).particles[j].x);
         if (dist < min_dist) {
@@ -213,7 +215,7 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     var closest_index = -1;
     if (uniforms.i_mouse.z > 0.0) {
-        closest_index = find_closest_vertex(mouse_pos, &voxel);
+        //closest_index = find_closest_vertex(mouse_pos, &voxel);
     }
 
     for (var i = 0; i < vertices_per_cube; i++) {
@@ -222,25 +224,25 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
         var velocity = particle.v;
         var new_pos = curr_pos + velocity * time_step + gravity * time_step * time_step;
         particle.x = new_pos;
-        // particle = handle_boundary_collisions(particle);
+        //particle = handle_boundary_collisions(particle);
         voxel.particles[i] = particle;
-        if (i == closest_index) {
-            let to_mouse = mouse_pos - new_pos;
-            new_pos += to_mouse * mouse_attraction_strength * time_step;
-        }
+        // if (i == closest_index) {
+        //     let to_mouse = mouse_pos - new_pos;
+        //     new_pos += to_mouse * mouse_attraction_strength * time_step;
+        // }
     }
 
     voxel = apply_gram_schmidt_constraint(voxel);
     
     for (var i = 0; i < vertices_per_cube; i++) {
         let particle_index = cube_index * u32(vertices_per_cube) + u32(i);
-        var particle = particles[particle_index];
-        var new_pos = particle.x;
-        var velocity = particle.v;
-        // particle = handle_boundary_collisions(particle);
-        particle.x = new_pos;
-        particle.v = (new_pos - particle.x) / time_step;
+        var particle = voxel.particles[i];
+        // var new_pos = particle.x;
+        // var velocity = particle.v;
+        // //particle = handle_boundary_collisions(particle);
+        // particle.x = new_pos;
+        // particle.v = (new_pos - particle.x) / time_step;
         particles[particle_index] = particle;
-        particles[particle_index].x.y += time_step;
+        // particles[particle_index].x.y += time_step;
     }
 }
