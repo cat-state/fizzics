@@ -8,7 +8,7 @@ const num_cubes: i32 = 4*4*4;
 const vertices_per_cube: i32 = 8;
 const total_vertices: i32 = num_cubes * vertices_per_cube;
 const cube_collision_radius: f32 = 0.33;
-
+const boundary: vec3<f32> = vec3<f32>(4.0, 4.0, 4.0);
 struct Particle {
     x: vec3<f32>,
     mass: f32,
@@ -99,9 +99,9 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         // u2 = average_on_sphere(u2, gs[2], gs[0]);
         // u3 = average_on_sphere(u3, gs[0], gs[1]);
 
-        var u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2] + 1e-6);
-        var u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2] + 1e-6);
-        var u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0] + 1e-6);
+        var u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]);
+        var u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]);
+        var u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]);
         u1 *= rest_length;
         u2 *= rest_length;
         u3 *= rest_length;
@@ -113,39 +113,42 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         let correction_next1 = (ideal_next1 - voxel.particles[next1].x) * constraint_stiffness;
         let correction_next2 = (ideal_next2 - voxel.particles[next2].x) * constraint_stiffness;
         let correction_next3 = (ideal_next3 - voxel.particles[next3].x) * constraint_stiffness;
-        let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
 
-        voxel.particles[next1].x += correction_next1;
-        voxel.particles[next2].x += correction_next2;
-        voxel.particles[next3].x += correction_next3;
+        let total_correction = correction_next1 + correction_next2 + correction_next3;
+        let correction_self = -total_correction / 4.0;
+
+        voxel.particles[next1].x += correction_next1 * 0.25;
+        voxel.particles[next2].x += correction_next2 * 0.25;
+        voxel.particles[next3].x += correction_next3 * 0.25;
         voxel.particles[i].x += correction_self;
+
     }
     return voxel;
 }
 
 fn handle_boundary_collisions(_particle: Particle) -> Particle {
     var particle = _particle;
-    if (particle.x.x < -3.0) {
-        particle.x.x = -3.0;
+    if (particle.x.x < -boundary.x) {
+        particle.x.x = -boundary.x;
         particle.v.x *= -collision_damping;
-    } else if (particle.x.x > 3.0) {
-        particle.x.x = 3.0;
+    } else if (particle.x.x > boundary.x) {
+        particle.x.x = boundary.x;
         particle.v.x *= -collision_damping;
     }
 
-    if (particle.x.y < -2.5) {
-        particle.x.y = -2.5;
+    if (particle.x.y < -boundary.y) {
+        particle.x.y = -boundary.y;
         particle.v.y *= -collision_damping;
-    } else if (particle.x.y > 4.0) {
-        particle.x.y = 4.0;
+    } else if (particle.x.y > boundary.y) {
+        particle.x.y = boundary.y;
         particle.v.y *= -collision_damping;
     }
 
-    if (particle.x.z < -3.0) {
-        particle.x.z = -3.0;
+    if (particle.x.z < -boundary.z) {
+        particle.x.z = -boundary.z;
         particle.v.z *= -collision_damping;
-    } else if (particle.x.z > 3.0) {
-        particle.x.z = 3.0;
+    } else if (particle.x.z > boundary.z) {
+        particle.x.z = boundary.z;
         particle.v.z *= -collision_damping;
     }
     return particle;
