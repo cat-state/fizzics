@@ -20,10 +20,15 @@ struct Voxel {
     particles: array<Particle, 8>,
 }
 
+struct FaceConstraint {
+    indices: array<u32, 8>,
+}
+
 struct Uniforms {
     i_mouse: vec4<f32>,
     i_resolution: vec2<f32>,
     i_frame: i32,
+    constraint_phase: u32,
 }
 
 fn get_voxel(idx: u32) -> Voxel {
@@ -43,7 +48,7 @@ fn get_voxel(idx: u32) -> Voxel {
 
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<uniform> uniforms: Uniforms;
-
+@group(0) @binding(2) var<storage, read_write> face_constraints: array<FaceConstraint>;
 
 fn project(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
     return dot(a, b) / dot(b, b) * b;
@@ -257,4 +262,33 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
         particle.v = (new_vel - particle.v) * 0.99 + new_vel;
         particles[global_particle_index] = particle;
     }
+}
+
+
+@compute @workgroup_size(1, 1, 1)
+fn apply_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let constraint_index = global_id.x;
+    let n_constraints = arrayLength(&face_constraints) / 3;
+    let C = face_constraints[constraint_index + n_constraints * uniforms.constraint_phase];
+    var face_voxel = Voxel(array<Particle, 8>(
+        particles[C.indices[0]],
+        particles[C.indices[1]],
+        particles[C.indices[2]],
+        particles[C.indices[3]],
+        particles[C.indices[4]],
+        particles[C.indices[5]],
+        particles[C.indices[6]],
+        particles[C.indices[7]],
+    ));
+
+    face_voxel = apply_gram_schmidt_constraint(face_voxel);
+
+    particles[C.indices[0]] = face_voxel.particles[0];
+    particles[C.indices[1]] = face_voxel.particles[1];
+    particles[C.indices[2]] = face_voxel.particles[2];
+    particles[C.indices[3]] = face_voxel.particles[3];
+    particles[C.indices[4]] = face_voxel.particles[4];
+    particles[C.indices[5]] = face_voxel.particles[5];
+    particles[C.indices[6]] = face_voxel.particles[6];
+    particles[C.indices[7]] = face_voxel.particles[7];
 }
