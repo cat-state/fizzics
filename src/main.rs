@@ -69,7 +69,7 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
     for x in 0..size {
         for y in 0..size {
             for z in 0..size {
-                let p =  2.0 * na::Vector3::new(x as f32, y as f32, z as f32);
+                let p = 2.0 * na::Vector3::new(x as f32, y as f32, z as f32);
                 let voxel = Voxel {
                     particles: offsets.map(|offset| 
                         Particle { 
@@ -373,11 +373,30 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let face_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    let x_face_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Face Constraints Pipeline"),
         layout: Some(&compute_pipeline_layout),
         module: &voxel_constraints,
-        entry_point: "apply_face_constraints",
+        entry_point: "apply_x_face_constraints",
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    let y_face_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Face Constraints Pipeline"),
+        layout: Some(&compute_pipeline_layout),
+        module: &voxel_constraints,
+        entry_point: "apply_y_face_constraints",
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    
+
+    let z_face_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Face Constraints Pipeline"),
+        layout: Some(&compute_pipeline_layout),
+        module: &voxel_constraints,
+        entry_point: "apply_z_face_constraints",
         compilation_options: Default::default(),
         cache: None,
     });
@@ -639,12 +658,13 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     for _ in 0..4 { 
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
                         compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);     
-                        compute_pass.set_pipeline(&face_constraints_pipeline);
+                        compute_pass.set_pipeline(&x_face_constraints_pipeline);
+                        compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
+                        compute_pass.set_pipeline(&y_face_constraints_pipeline);
+                        compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
+                        compute_pass.set_pipeline(&z_face_constraints_pipeline);
                         compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
 
-                        compute_pass.dispatch_workgroups(1, flat_constraints.len() as u32 / 3u32, 1);
-                    
-                        compute_pass.dispatch_workgroups(1, 1, flat_constraints.len() as u32 / 3u32);
 
                     }
 

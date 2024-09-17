@@ -8,7 +8,7 @@ const num_cubes: i32 = 4*4*4;
 const vertices_per_cube: i32 = 8;
 const total_vertices: i32 = num_cubes * vertices_per_cube;
 const cube_collision_radius: f32 = 0.33;
-const boundary: vec3<f32> = vec3<f32>(8.0, 8.0, 8.0);
+const boundary: vec3<f32> = vec3<f32>(4.0, 4.0, 4.0);
 struct Particle {
     x: vec3<f32>,
     mass: f32,
@@ -104,9 +104,9 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         // u2 = average_on_sphere(u2, gs[2], gs[0]);
         // u3 = average_on_sphere(u3, gs[0], gs[1]);
 
-        let u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]) * rest_length;
-        let u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]) * rest_length;
-        let u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]) * rest_length;
+        let u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2] + 1e-6) * rest_length;
+        let u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2] + 1e-6) * rest_length;
+        let u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0] + 1e-6) * rest_length;
 
         // let u1 = average_on_sphere(gs_0[0], gs_2[1], gs_1[2]) * rest_length;
         // let u2 = average_on_sphere(gs_0[1], gs_1[0], gs_2[2]) * rest_length;
@@ -121,19 +121,19 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         let correction_next3 = (ideal_next3 - voxel.particles[next3].x) * constraint_stiffness;
 
         // this has no translational bias but causes voxels to spin 
-        let total_correction = correction_next1 + correction_next2 + correction_next3;
-        let correction_self = -total_correction / 4.0;
-        voxel.particles[next1].x += correction_next1 * 0.25;
-        voxel.particles[next2].x += correction_next2 * 0.25;
-        voxel.particles[next3].x += correction_next3 * 0.25;
-        voxel.particles[i].x += correction_self;
-
-        // let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
-
-        // voxel.particles[next1].x += correction_next1;
-        // voxel.particles[next2].x += correction_next2;
-        // voxel.particles[next3].x += correction_next3;
+        // let total_correction = correction_next1 + correction_next2 + correction_next3;
+        // let correction_self = -total_correction / 4.0;
+        // voxel.particles[next1].x += correction_next1 * 0.25;
+        // voxel.particles[next2].x += correction_next2 * 0.25;
+        // voxel.particles[next3].x += correction_next3 * 0.25;
         // voxel.particles[i].x += correction_self;
+
+        let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
+
+        voxel.particles[next1].x += correction_next1;
+        voxel.particles[next2].x += correction_next2;
+        voxel.particles[next3].x += correction_next3;
+        voxel.particles[i].x += correction_self;
     }
     return voxel;
 }
@@ -265,19 +265,7 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
 }
 
 
-@compute @workgroup_size(1, 1, 1)
-fn apply_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(num_workgroups) num_workgroups: vec3<u32>) {
-    let constraint_index = global_id.x;
-    let n_constraints = max(num_workgroups.x, max(num_workgroups.y, num_workgroups.z));
-    var phase: u32 = 0;
-    if (num_workgroups.x > 1) {
-        phase = u32(0);
-    } else if (num_workgroups.y > 1) {
-        phase = u32(1);
-    } else if (num_workgroups.z > 1) {
-        phase = u32(2);
-    }
-    let C = face_constraints[constraint_index + n_constraints * phase];
+fn apply_face_constraint(C: FaceConstraint) {
     var face_voxel = Voxel(array<Particle, 8>(
         particles[C.indices[0]],
         particles[C.indices[1]],
@@ -299,4 +287,29 @@ fn apply_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>, @
     particles[C.indices[5]] = face_voxel.particles[5];
     particles[C.indices[6]] = face_voxel.particles[6];
     particles[C.indices[7]] = face_voxel.particles[7];
+}
+
+@compute @workgroup_size(1, 1, 1)
+fn apply_x_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(num_workgroups) num_workgroups: vec3<u32>) {
+    let constraint_index = global_id.x;
+    let n_constraints = num_workgroups.x;
+    let C = face_constraints[constraint_index + n_constraints * 0];
+    apply_face_constraint(C);
+}
+
+@compute @workgroup_size(1, 1, 1)
+fn apply_y_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(num_workgroups) num_workgroups: vec3<u32>) {
+    let constraint_index = global_id.x;
+    let n_constraints = num_workgroups.x;
+    let C = face_constraints[constraint_index + n_constraints * 1];
+    apply_face_constraint(C);
+}
+
+
+@compute @workgroup_size(1, 1, 1)
+fn apply_z_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(num_workgroups) num_workgroups: vec3<u32>) {
+    let constraint_index = global_id.x;
+    let n_constraints = num_workgroups.x;
+    let C = face_constraints[constraint_index + n_constraints * 2];
+    apply_face_constraint(C);
 }
