@@ -60,7 +60,7 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
         na::Vector3::new(-1.0, 1.0, 1.0) * 0.5,
     ];
     let zero = na::Vector3::zeros();
-    let center = na::Vector3::new(size as f32, size as f32, size as f32) * 0.5;
+    let center = na::Vector3::new(0.5 * size as f32, 0.5 * size as f32, 0.5 * size as f32);
 
     let mut voxels = Vec::new();
     let mut x_constraints = Vec::new();
@@ -69,7 +69,7 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
     for x in 0..size {
         for y in 0..size {
             for z in 0..size {
-                let p = 2.0 * na::Vector3::new(x as f32, y as f32, z as f32);
+                let p =  2.0 * na::Vector3::new(x as f32, y as f32, z as f32);
                 let voxel = Voxel {
                     particles: offsets.map(|offset| 
                         Particle { 
@@ -606,6 +606,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             Event::RedrawRequested(_) => {
                 // Update camera position and view-projection matrix
                 let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+                let time = 0.0f64;
                 let camera_x = 16.0 * time.cos() as f32;
                 let camera_z = 16.0 * time.sin() as f32;
                 let camera_y = 15.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
@@ -635,14 +636,12 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     compute_pass.set_bind_group(0, &compute_bind_group, &[]);
                     compute_pass.set_pipeline(&collision_pipeline);
                     compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
-                    compute_pass.set_pipeline(&voxel_constraints_pipeline);
                     for _ in 0..4 { 
+                        compute_pass.set_pipeline(&voxel_constraints_pipeline);
                         compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);     
-                    }
-                    compute_pass.set_pipeline(&face_constraints_pipeline);
-                    for _ in 0..4 {
+                        compute_pass.set_pipeline(&face_constraints_pipeline);
                         compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
-                    
+
                         compute_pass.dispatch_workgroups(1, flat_constraints.len() as u32 / 3u32, 1);
                     
                         compute_pass.dispatch_workgroups(1, 1, flat_constraints.len() as u32 / 3u32);

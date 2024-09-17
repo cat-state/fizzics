@@ -8,7 +8,7 @@ const num_cubes: i32 = 4*4*4;
 const vertices_per_cube: i32 = 8;
 const total_vertices: i32 = num_cubes * vertices_per_cube;
 const cube_collision_radius: f32 = 0.33;
-const boundary: vec3<f32> = vec3<f32>(4.0, 4.0, 4.0);
+const boundary: vec3<f32> = vec3<f32>(8.0, 8.0, 8.0);
 struct Particle {
     x: vec3<f32>,
     mass: f32,
@@ -121,19 +121,19 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         let correction_next3 = (ideal_next3 - voxel.particles[next3].x) * constraint_stiffness;
 
         // this has no translational bias but causes voxels to spin 
-        // let total_correction = correction_next1 + correction_next2 + correction_next3;
-        // let correction_self = -total_correction / 3.0;
-        // voxel.particles[next1].x += correction_next1 * 0.33;
-        // voxel.particles[next2].x += correction_next2 * 0.33;
-        // voxel.particles[next3].x += correction_next3 * 0.33;
-        // voxel.particles[i].x += correction_self;
-
-        let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
-
-        voxel.particles[next1].x += correction_next1;
-        voxel.particles[next2].x += correction_next2;
-        voxel.particles[next3].x += correction_next3;
+        let total_correction = correction_next1 + correction_next2 + correction_next3;
+        let correction_self = -total_correction / 4.0;
+        voxel.particles[next1].x += correction_next1 * 0.25;
+        voxel.particles[next2].x += correction_next2 * 0.25;
+        voxel.particles[next3].x += correction_next3 * 0.25;
         voxel.particles[i].x += correction_self;
+
+        // let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
+
+        // voxel.particles[next1].x += correction_next1;
+        // voxel.particles[next2].x += correction_next2;
+        // voxel.particles[next3].x += correction_next3;
+        // voxel.particles[i].x += correction_self;
     }
     return voxel;
 }
@@ -272,9 +272,9 @@ fn apply_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>, @
     var phase: u32 = 0;
     if (num_workgroups.x > 1) {
         phase = u32(0);
-    } else if (num_workgroups.x > 2) {
+    } else if (num_workgroups.y > 1) {
         phase = u32(1);
-    } else if (num_workgroups.x > 3) {
+    } else if (num_workgroups.z > 1) {
         phase = u32(2);
     }
     let C = face_constraints[constraint_index + n_constraints * phase];
