@@ -1,15 +1,15 @@
 const time_step: f32 = 1.0 / 60.0;
 const gravity: vec3<f32> = vec3<f32>(0.0, -9.8, 0.0);
-const constraint_stiffness: f32 = 0.5;
+const constraint_stiffness: f32 = 1.0;
 const face_constraint_stiffness: f32 = 0.001;
 const rest_length: f32 = 0.5;
 const collision_damping: f32 = 0.03;
 const mouse_attraction_strength: f32 = 10.0;
-const num_cubes: i32 = 4*4*4;
+const num_cubes: i32 = 8*8*8;
 const vertices_per_cube: i32 = 8;
 const total_vertices: i32 = num_cubes * vertices_per_cube;
 const cube_collision_radius: f32 = 0.2;
-const boundary: vec3<f32> = vec3<f32>(4.0, 4.0, 4.0);
+const boundary: vec3<f32> = vec3<f32>(100.0, 6.0, 100.0);
 struct Particle {
     x: vec3<f32>,
     mass: f32,
@@ -34,6 +34,7 @@ struct Uniforms {
     i_resolution: vec2<f32>,
     i_frame: i32,
     constraint_phase: u32,
+    i_offset: u32
 }
 
 fn get_voxel(idx: u32) -> Voxel {
@@ -168,7 +169,8 @@ fn apply_gram_schmidt_face_constraint(_C: FaceConstraint) {
 
 fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
     var voxel = _voxel;
-    for (var i = 0; i < vertices_per_cube; i++) {
+    for (var _i: u32 = 0; _i < u32(vertices_per_cube); _i++) {
+        var i = (_i + uniforms.i_offset) % u32(vertices_per_cube);
         let next1 = (i + 1) % 4 + (i / 4) * 4;
         let next2 = (i + 3) % 4 + (i / 4) * 4;
         let next3 = i ^ 4;
@@ -181,17 +183,23 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         let gs_1 = gram_schmidt(edge2, edge3, edge1);
         let gs_2 = gram_schmidt(edge3, edge1, edge2);
 
+        let gs_3 = gram_schmidt(edge1, edge3, edge2);
+        let gs_4 = gram_schmidt(edge2, edge1, edge3);
+        let gs_5 = gram_schmidt(edge3, edge2, edge1);
         // u1 = average_on_sphere(u1, gs[1], gs[2]);
         // u2 = average_on_sphere(u2, gs[2], gs[0]);
         // u3 = average_on_sphere(u3, gs[0], gs[1]);
 
-    //    let u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]) * rest_length;
-  //      let u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]) * rest_length;
-//        let u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]) * rest_length;
+       let u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]) * rest_length;
+       let u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]) * rest_length;
+       let u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]) * rest_length;
 
-        let u1 = average_on_sphere(gs_0[0], gs_2[1], gs_1[2]) * rest_length;
-        let u2 = average_on_sphere(gs_0[1], gs_1[0], gs_2[2]) * rest_length;
-        let u3 = average_on_sphere(gs_0[2], gs_1[1], gs_2[0]) * rest_length;
+        // let u4 = normalize(gs_3[0] + gs_5[1] + gs_4[2]) * rest_length;
+        // let u5 = normalize(gs_3[2] + gs_4[0] + gs_5[1]) * rest_length;
+        // let u6 = normalize(gs_3[1] + gs_4[2] + gs_5[0]) * rest_length;
+        // let u1 = average_on_sphere(gs_0[0], gs_2[1], gs_1[2]) * rest_length;
+        // let u2 = average_on_sphere(gs_0[1], gs_1[0], gs_2[2]) * rest_length;
+        // let u3 = average_on_sphere(gs_0[2], gs_1[1], gs_2[0]) * rest_length;
 
         let ideal_next1 = voxel.particles[i].x + u1;
         let ideal_next2 = voxel.particles[i].x + u2;

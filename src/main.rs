@@ -10,7 +10,7 @@ use wgpu::util::DeviceExt;
 use nalgebra as na;
 use na::allocator::{Allocator};
 use na::base::{DefaultAllocator};
-
+use rand::Rng;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -56,14 +56,14 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
     // let y_faces = [[3, 2, 1, 0], [7, 6, 5, 4]];
     // let z_faces = [[4, 5, 6, 7], [0, 1, 2, 3]];
     let offsets = [
-        na::Vector3::new(-1.0, -1.0, -1.0) * 0.5,
-        na::Vector3::new(1.0, -1.0, -1.0) * 0.5,
-        na::Vector3::new(1.0, 1.0, -1.0) * 0.5,
-        na::Vector3::new(-1.0, 1.0, -1.0) * 0.5,
-        na::Vector3::new(-1.0, -1.0, 1.0) * 0.5,
-        na::Vector3::new(1.0, -1.0, 1.0) * 0.5,
+        na::Vector3::new(0.0, 0.0, 0.0) * 0.5,
+        na::Vector3::new(1.0, 0.0, 0.0) * 0.5,
+        na::Vector3::new(1.0, 1.0, 0.0) * 0.5,
+        na::Vector3::new(0.0, 1.0, 0.0) * 0.5,
+        na::Vector3::new(0.0, 0.0, 1.0) * 0.5,
+        na::Vector3::new(1.0, 0.0, 1.0) * 0.5,
         na::Vector3::new(1.0, 1.0, 1.0) * 0.5,
-        na::Vector3::new(-1.0, 1.0, 1.0) * 0.5,
+        na::Vector3::new(0.0, 1.0, 1.0) * 0.5,
     ];
     let zero = na::Vector3::zeros();
     let center = na::Vector3::new(0.5 * size as f32, 0.5 * size as f32, 0.5 * size as f32);
@@ -75,7 +75,7 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
     for x in 0..size {
         for y in 0..size {
             for z in 0..size {
-                let p = 2.0 * na::Vector3::new(x as f32, y as f32, z as f32);
+                let p = na::Vector3::new(x as f32, y as f32, z as f32);
                 let voxel = Voxel {
                     particles: offsets.map(|offset| 
                         Particle { 
@@ -269,6 +269,7 @@ struct PBDUniforms {
     i_resolution: na::Vector2<f32>,
     i_frame: i32,
     constraint_phase: u32,
+    i_offset: u32,
 }
 
 #[repr(C)]
@@ -413,7 +414,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let (voxels, xyz_constraints) = voxel_cube(4);
+    let (voxels, xyz_constraints) = voxel_cube(8);
     let flat_constraints = xyz_constraints.0.into_iter().chain(xyz_constraints.1.into_iter()).chain(xyz_constraints.2.into_iter()).collect::<Vec<FaceConstraint>>();
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
@@ -431,11 +432,12 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
     
 
-    let uniforms = PBDUniforms {
+    let mut uniforms = PBDUniforms {
         i_mouse: na::Vector4::<f32>::new(0.0, 0.0, 0.0, 0.0),
         i_resolution: na::Vector2::<f32>::new(size.width as f32, size.height as f32),
         i_frame: 0,
         constraint_phase: 0,
+        i_offset: 0,
     };
 
     let pbd_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -596,6 +598,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
+    let mut i_offset: u32 = 0;
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
 
@@ -659,6 +663,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     label: Some("Compute Encoder"),
                 });
 
+                let mut rng = rand::thread_rng();
+                let i_offset: u32 = rng.gen_range(0..8);
+                uniforms.i_offset = 0; // i_offset as u32;
+                queue.write_buffer(&pbd_uniforms_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+                queue.submit([]);
                 {
                     let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("Compute Pass"),
@@ -676,7 +685,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
                         compute_pass.set_pipeline(&z_face_constraints_pipeline);
                         compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
-
 
                     }
 
