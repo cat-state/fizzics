@@ -29,10 +29,16 @@ struct Voxel {
 }
 
 // 8 particles per pair of voxel faces
+// left indices, right indices
+// each pair of edges between two neighbouring verts constraints the opposing vertex 
+// on the other face
+// if idx is negative then the predicted pos is negated
+
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct FaceConstraint {
-   indices: [u32; 8]
+   l: [i32; 4],
+   r: [i32; 4]
 }
 
 fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstraint>, Vec<FaceConstraint>)) {
@@ -82,52 +88,58 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
                 };
                 voxels.push(voxel);
                 let midx = x * size * size + y * size + z;
-                let mpidx = midx * 8;
+                let mpidx = (midx * 8) as i32;
                 if x != 0 {    
                     let vidx = (x - 1) * size * size + y * size + z;
-                    let vpidx = vidx * 8;
+                    let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
-                        indices: [vpidx + 1, mpidx + 0, mpidx + 3, vpidx + 2, vpidx + 5, mpidx + 4, mpidx + 7, vpidx + 6]
+                        l: [vpidx + 1, vpidx + 5, vpidx + 6, vpidx + 2],
+                        r: [mpidx + 0, mpidx + 4, mpidx + 7, mpidx + 3]
                     };
                     x_constraints.push(c);
                 }
                 if x != (size - 1) {
                     let vidx = (x + 1) * size * size + y * size + z;
-                    let vpidx = vidx * 8;
+                    let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
-                        indices: [mpidx + 1, vpidx + 0, vpidx + 3, mpidx + 2, mpidx + 5, vpidx + 4, vpidx + 7, mpidx + 6]
+                        l: [mpidx + 1, mpidx + 5, mpidx + 6, mpidx + 2],
+                        r: [vpidx + 0, vpidx + 4, vpidx + 7, vpidx + 3]
                     };
                     x_constraints.push(c);
                 }
                 if y != 0 {
                     let vidx = x * size * size + (y - 1) * size + z;
-                    let vpidx = vidx * 8;
+                    let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
-                        indices: [mpidx + 3, mpidx + 2, vpidx + 1, vpidx + 0, mpidx + 7, mpidx + 6, vpidx + 5, vpidx + 4]
+                        l: [mpidx + 0, mpidx + 4, mpidx + 5, mpidx + 1],
+                        r: [-(vpidx + 3), -(vpidx + 7), -(vpidx + 6), -(vpidx + 2)]
                     };
                     y_constraints.push(c);
                 }
                 if y != (size - 1) {
                     let vidx = x * size * size + (y + 1) * size + z;
-                    let vpidx = vidx * 8;
+                    let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
-                        indices: [vpidx + 3, vpidx + 2, mpidx + 1, mpidx + 0, vpidx + 7, vpidx + 6, mpidx + 5, mpidx + 4]
+                        l: [vpidx + 0, vpidx + 4, vpidx + 5, vpidx + 1],
+                        r: [-(mpidx + 3), -(mpidx + 7), -(mpidx + 6), -(mpidx + 2)]
                     };
                     y_constraints.push(c);
                 }
                 if z != 0 {
                     let vidx = x * size * size + y * size + (z - 1);
-                    let vpidx = vidx * 8;
+                    let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
-                        indices: [mpidx + 4, mpidx + 5, mpidx + 6, mpidx + 7, vpidx + 0, vpidx + 1, vpidx + 2, vpidx + 3]
+                        l: [mpidx + 0, mpidx + 1, mpidx + 2, mpidx + 3],
+                        r: [-(vpidx + 4), -(vpidx + 5), -(vpidx + 6), -(vpidx + 7)]
                     };
                     z_constraints.push(c);
                 }
                 if z != (size - 1) {
                     let vidx = x * size * size + y * size + (z + 1);
-                    let vpidx = vidx * 8;
+                    let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
-                        indices: [vpidx + 4, vpidx + 5, vpidx + 6, vpidx + 7, mpidx + 0, mpidx + 1, mpidx + 2, mpidx + 3]
+                        l: [vpidx + 0, vpidx + 1, vpidx + 2, vpidx + 3],
+                        r: [-(mpidx + 4), -(mpidx + 5), -(mpidx + 6), -(mpidx + 7)]
                     };
                     z_constraints.push(c);
                 }
@@ -653,8 +665,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         ..Default::default()
                     });
                     compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-                    compute_pass.set_pipeline(&collision_pipeline);
-                    compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                    // compute_pass.set_pipeline(&collision_pipeline);
+                    // compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                     for _ in 0..4 { 
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
                         compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);     

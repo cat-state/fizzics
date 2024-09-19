@@ -1,6 +1,7 @@
 const time_step: f32 = 1.0 / 60.0;
 const gravity: vec3<f32> = vec3<f32>(0.0, -9.8, 0.0);
-const constraint_stiffness: f32 = 0.3;
+const constraint_stiffness: f32 = 0.5;
+const face_constraint_stiffness: f32 = 0.001;
 const rest_length: f32 = 0.5;
 const collision_damping: f32 = 0.03;
 const mouse_attraction_strength: f32 = 10.0;
@@ -20,8 +21,12 @@ struct Voxel {
     particles: array<Particle, 8>,
 }
 
+// left indices, right indices
+// each pair of edges between two neighbouring verts constraints the opposing vertex 
+// on the other face
 struct FaceConstraint {
-    indices: array<u32, 8>,
+    l: array<i32, 4>,
+    r: array<i32, 4>,
 }
 
 struct Uniforms {
@@ -82,8 +87,84 @@ fn slerp(start: vec3<f32>, end: vec3<f32>, t: f32) -> vec3<f32> {
 
 fn average_on_sphere(v1: vec3<f32>, v2: vec3<f32>, v3: vec3<f32>) -> vec3<f32> {
     let v12 = slerp(v1, v2, 0.5);
-    return slerp(v12, v3, 1.0 / 2.0);
+    return slerp(v12, v3, 1.0 / 3.0);
 }
+
+fn apply_gram_schmidt_face_constraint(_C: FaceConstraint) {
+
+    var C = _C;
+    var l_signs = array<f32, 4>(sign(f32(C.l[0])), sign(f32(C.l[1])), sign(f32(C.l[2])), sign(f32(C.l[3])));
+    var r_signs = array<f32, 4>(sign(f32(C.r[0])), sign(f32(C.r[1])), sign(f32(C.r[2])), sign(f32(C.r[3])));
+
+    for (var i = 0; i < 4; i++) {
+        C.l[i] = abs(C.l[i]);
+        C.r[i] = abs(C.r[i]);
+    }
+
+    var l_particles = array<Particle, 4>(
+        particles[C.l[0]],
+        particles[C.l[1]],
+        particles[C.l[2]],
+        particles[C.l[3]],
+    );
+
+    var r_particles = array<Particle, 4>(
+        particles[C.r[0]],
+        particles[C.r[1]],
+        particles[C.r[2]],
+        particles[C.r[3]],
+    );
+
+    var ideal_ls = array<vec3<f32>, 4>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+    var ideal_rs = array<vec3<f32>, 4>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+
+    for (var step = 0; step < 1; step++) {
+        for (var i = 0; i < 4; i++) {
+            let l_next_edge = l_particles[(i + 1) % 4].x - l_particles[i].x;
+            let l_prev_edge = l_particles[(i + 3) % 4].x - l_particles[i].x;
+            let r_next_edge = r_particles[(i + 1) % 4].x - r_particles[i].x;
+            let r_prev_edge = r_particles[(i + 3) % 4].x - r_particles[i].x;
+
+            let r_pred = (l_signs[i] * cross(l_next_edge, l_prev_edge));
+            let l_pred = (r_signs[i] * cross(r_next_edge, r_prev_edge));
+
+            ideal_ls[i] = l_pred;
+            ideal_rs[i] = r_pred;
+
+            let l_correction = (ideal_ls[i] - l_particles[i].x) * face_constraint_stiffness;
+            let r_correction = (ideal_rs[i] - r_particles[i].x) * face_constraint_stiffness;
+
+            let l_old_x = l_particles[i].x;
+            let r_old_x = r_particles[i].x;
+            l_particles[i].x += l_correction;
+            r_particles[i].x += r_correction;
+
+        }
+
+        for (var i = 0; i < 4; i++) {
+            let l_correction = (ideal_ls[i] - l_particles[i].x) * face_constraint_stiffness;
+            let r_correction = (ideal_rs[i] - r_particles[i].x) * face_constraint_stiffness;
+
+            let l_old_x = l_particles[i].x;
+            let r_old_x = r_particles[i].x;
+            // l_particles[i].x += l_correction;
+            // r_particles[i].x += r_correction;
+            // l_particles[i].v = (l_particles[i].x - l_old_x) / time_step;
+            // r_particles[i].v = (r_particles[i].x - r_old_x) / time_step;
+        }
+    }
+
+    particles[C.l[0]] = l_particles[0];
+    particles[C.l[1]] = l_particles[1];
+    particles[C.l[2]] = l_particles[2];
+    particles[C.l[3]] = l_particles[3];
+    particles[C.r[0]] = r_particles[0];
+    particles[C.r[1]] = r_particles[1];
+    particles[C.r[2]] = r_particles[2];
+    particles[C.r[3]] = r_particles[3];
+}
+
+
 
 fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
     var voxel = _voxel;
@@ -104,13 +185,13 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         // u2 = average_on_sphere(u2, gs[2], gs[0]);
         // u3 = average_on_sphere(u3, gs[0], gs[1]);
 
-        let u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2] + 1e-6) * rest_length;
-        let u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2] + 1e-6) * rest_length;
-        let u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0] + 1e-6) * rest_length;
+    //    let u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]) * rest_length;
+  //      let u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]) * rest_length;
+//        let u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]) * rest_length;
 
-        // let u1 = average_on_sphere(gs_0[0], gs_2[1], gs_1[2]) * rest_length;
-        // let u2 = average_on_sphere(gs_0[1], gs_1[0], gs_2[2]) * rest_length;
-        // let u3 = average_on_sphere(gs_0[2], gs_1[1], gs_2[0]) * rest_length;
+        let u1 = average_on_sphere(gs_0[0], gs_2[1], gs_1[2]) * rest_length;
+        let u2 = average_on_sphere(gs_0[1], gs_1[0], gs_2[2]) * rest_length;
+        let u3 = average_on_sphere(gs_0[2], gs_1[1], gs_2[0]) * rest_length;
 
         let ideal_next1 = voxel.particles[i].x + u1;
         let ideal_next2 = voxel.particles[i].x + u2;
@@ -264,37 +345,36 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 }
 
-
-fn apply_face_constraint(C: FaceConstraint) {
-    var face_voxel = Voxel(array<Particle, 8>(
-        particles[C.indices[0]],
-        particles[C.indices[1]],
-        particles[C.indices[2]],
-        particles[C.indices[3]],
-        particles[C.indices[4]],
-        particles[C.indices[5]],
-        particles[C.indices[6]],
-        particles[C.indices[7]],
-    ));
-
-    face_voxel = apply_gram_schmidt_constraint(face_voxel);
-
-    particles[C.indices[0]] = face_voxel.particles[0];
-    particles[C.indices[1]] = face_voxel.particles[1];
-    particles[C.indices[2]] = face_voxel.particles[2];
-    particles[C.indices[3]] = face_voxel.particles[3];
-    particles[C.indices[4]] = face_voxel.particles[4];
-    particles[C.indices[5]] = face_voxel.particles[5];
-    particles[C.indices[6]] = face_voxel.particles[6];
-    particles[C.indices[7]] = face_voxel.particles[7];
-}
-
 @compute @workgroup_size(1, 1, 1)
 fn apply_x_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(num_workgroups) num_workgroups: vec3<u32>) {
     let constraint_index = global_id.x;
     let n_constraints = num_workgroups.x;
     let C = face_constraints[constraint_index + n_constraints * 0];
-    apply_face_constraint(C);
+    // apply_gram_schmidt_face_constraint(C);
+
+    var voxel = Voxel(
+        array<Particle, 8>(
+            particles[abs(C.l[0])],
+            particles[abs(C.l[1])],
+            particles[abs(C.l[2])],
+            particles[abs(C.l[3])],
+            particles[abs(C.r[0])],
+            particles[abs(C.r[1])],
+            particles[abs(C.r[2])],
+            particles[abs(C.r[3])],
+        )
+    );
+
+    voxel = apply_gram_schmidt_constraint(voxel);
+
+    particles[abs(C.l[0])] = voxel.particles[0];
+    particles[abs(C.l[1])] = voxel.particles[1];
+    particles[abs(C.l[2])] = voxel.particles[2];
+    particles[abs(C.l[3])] = voxel.particles[3];
+    particles[abs(C.r[0])] = voxel.particles[4];
+    particles[abs(C.r[1])] = voxel.particles[5];
+    particles[abs(C.r[2])] = voxel.particles[6];
+    particles[abs(C.r[3])] = voxel.particles[7];
 }
 
 @compute @workgroup_size(1, 1, 1)
@@ -302,7 +382,33 @@ fn apply_y_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>,
     let constraint_index = global_id.x;
     let n_constraints = num_workgroups.x;
     let C = face_constraints[constraint_index + n_constraints * 1];
-    apply_face_constraint(C);
+    // apply_gram_schmidt_face_constraint(C);
+
+
+    var voxel = Voxel(
+        array<Particle, 8>(
+            particles[abs(C.l[0])],
+            particles[abs(C.l[1])],
+            particles[abs(C.l[2])],
+            particles[abs(C.l[3])],
+            particles[abs(C.r[0])],
+            particles[abs(C.r[1])],
+            particles[abs(C.r[2])],
+            particles[abs(C.r[3])],
+        )
+    );
+
+    voxel = apply_gram_schmidt_constraint(voxel);
+
+    particles[abs(C.l[0])] = voxel.particles[0];
+    particles[abs(C.l[1])] = voxel.particles[1];
+    particles[abs(C.l[2])] = voxel.particles[2];
+    particles[abs(C.l[3])] = voxel.particles[3];
+    particles[abs(C.r[0])] = voxel.particles[4];
+    particles[abs(C.r[1])] = voxel.particles[5];
+    particles[abs(C.r[2])] = voxel.particles[6];
+    particles[abs(C.r[3])] = voxel.particles[7];
+
 }
 
 
@@ -311,5 +417,32 @@ fn apply_z_face_constraints(@builtin(global_invocation_id) global_id: vec3<u32>,
     let constraint_index = global_id.x;
     let n_constraints = num_workgroups.x;
     let C = face_constraints[constraint_index + n_constraints * 2];
-    apply_face_constraint(C);
+    // apply_gram_schmidt_face_constraint(C);
+
+
+
+    var voxel = Voxel(
+        array<Particle, 8>(
+            particles[abs(C.l[0])],
+            particles[abs(C.l[1])],
+            particles[abs(C.l[2])],
+            particles[abs(C.l[3])],
+            particles[abs(C.r[0])],
+            particles[abs(C.r[1])],
+            particles[abs(C.r[2])],
+            particles[abs(C.r[3])],
+        )
+    );
+
+    voxel = apply_gram_schmidt_constraint(voxel);
+
+    particles[abs(C.l[0])] = voxel.particles[0];
+    particles[abs(C.l[1])] = voxel.particles[1];
+    particles[abs(C.l[2])] = voxel.particles[2];
+    particles[abs(C.l[3])] = voxel.particles[3];
+    particles[abs(C.r[0])] = voxel.particles[4];
+    particles[abs(C.r[1])] = voxel.particles[5];
+    particles[abs(C.r[2])] = voxel.particles[6];
+    particles[abs(C.r[3])] = voxel.particles[7];
+
 }
