@@ -18,7 +18,8 @@ struct Particle {
     x: na::Vector3<f32>,
     mass: f32,
     v: na::Vector3<f32>,
-    _padding: f32
+    _padding: f32,
+    q: na::Quaternion<f32>,
 }
 
 
@@ -83,6 +84,7 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
                             mass: 1.0,
                             v: zero,
                             _padding: 0.0,
+                            q: na::Quaternion::new(0.0, 0.0, 0.0, 0.0)
                         }
                     )
                 };
