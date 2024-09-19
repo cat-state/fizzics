@@ -1,6 +1,6 @@
 const time_step: f32 = 1.0 / 60.0;
 const gravity: vec3<f32> = vec3<f32>(0.0, -9.8, 0.0);
-const constraint_stiffness: f32 = 0.01;
+const constraint_stiffness: f32 = 0.9;
 const face_constraint_stiffness: f32 = 0.001;
 const rest_length: f32 = 0.5;
 const collision_damping: f32 = 0.03;
@@ -57,7 +57,7 @@ fn get_voxel(idx: u32) -> Voxel {
 @group(0) @binding(1) var<uniform> uniforms: Uniforms;
 @group(0) @binding(2) var<storage, read_write> face_constraints: array<FaceConstraint>;
 
-
+// https://github.com/mikolalysenko/rotation-averaging/blob/master/rotation-averaging.js
 fn extract_rotation(A: mat3x3<f32>, q: vec4<f32>, max_iter: u32) -> vec4<f32> {
     var q_out = q;
     for (var iter: u32 = 0u; iter < max_iter; iter++) {
@@ -239,26 +239,27 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         let edge2 = voxel.particles[next2].x - voxel.particles[i].x;
         let edge3 = voxel.particles[next3].x - voxel.particles[i].x;
 
-        let edgem = transpose(mat3x3<f32>(edge1, edge2, edge3));
-        var q: vec4<f32> = voxel.particles[i].q;
-        if(q[3] == 0.0) {
-            // Convert the edge matrix to a quaternion
-            let quat_from_matrix = quaternion_from_matrix(edgem);
+        // let edgem = transpose(mat3x3<f32>(edge1, edge2, edge3));
+        // var q: vec4<f32> = voxel.particles[i].q;
+        // if(q[3] == 0.0) {
+        //     // Convert the edge matrix to a quaternion
+        //     let quat_from_matrix = quaternion_from_matrix(edgem);
         
-            // Normalize the quaternion
-            q = normalize(quat_from_matrix);
-        }
+        //     // Normalize the quaternion
+        //     q = normalize(quat_from_matrix);
+        // }
 
-        q = extract_rotation(edgem, q, u32(10));
-        voxel.particles[i].q = q;
+        // q = extract_rotation(edgem, q, u32(10));
+        // voxel.particles[i].q = q;
         
-        let us = quaternion_to_matrix(q);
+        // let us = quaternion_to_matrix(q);
         // let u1 = normalize(us[0]) * rest_length;
         // let u2 = normalize(us[1]) * rest_length;
         // let u3 = normalize(us[2]) * rest_length;
         // let u1 = normalize(vec3<f32>(us[0][0], us[1][0], us[2][0])) * rest_length;
         // let u2 = normalize(vec3<f32>(us[0][1], us[1][1], us[2][1])) * rest_length;
         // let u3 = normalize(vec3<f32>(us[0][2], us[1][2], us[2][2])) * rest_length;
+
         let gs_0 = gram_schmidt(edge1, edge2, edge3);
         let gs_1 = gram_schmidt(edge2, edge3, edge1);
         let gs_2 = gram_schmidt(edge3, edge1, edge2);
@@ -287,19 +288,19 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         let correction_next3 = (ideal_next3 - voxel.particles[next3].x) * constraint_stiffness;
 
         // this has no translational bias but causes voxels to spin 
-        // let total_correction = correction_next1 + correction_next2 + correction_next3;
-        // let correction_self = -total_correction / 4.0;
-        // voxel.particles[next1].x += correction_next1 * 0.25;
-        // voxel.particles[next2].x += correction_next2 * 0.25;
-        // voxel.particles[next3].x += correction_next3 * 0.25;
-        // voxel.particles[i].x += correction_self;
-
-        let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
-
-        voxel.particles[next1].x += correction_next1;
-        voxel.particles[next2].x += correction_next2;
-        voxel.particles[next3].x += correction_next3;
+        let total_correction = correction_next1 + correction_next2 + correction_next3;
+        let correction_self = -total_correction / 4.0;
+        voxel.particles[next1].x += correction_next1 * 0.25;
+        voxel.particles[next2].x += correction_next2 * 0.25;
+        voxel.particles[next3].x += correction_next3 * 0.25;
         voxel.particles[i].x += correction_self;
+
+        // let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
+
+        // voxel.particles[next1].x += correction_next1;
+        // voxel.particles[next2].x += correction_next2;
+        // voxel.particles[next3].x += correction_next3;
+        // voxel.particles[i].x += correction_self;
     }
     return voxel;
 }
@@ -379,19 +380,6 @@ fn handle_particle_collisions(@builtin(global_invocation_id) global_id: vec3<u32
     particles[particle_index] = p_i;
 }
 
-fn find_closest_vertex(mouse_pos: vec3<f32>, voxel: ptr<function, Voxel>) -> i32 {
-    var min_dist = distance(mouse_pos, (*voxel).particles[0].x);
-    var closest_index = -1;
-    for (var j = 0; j < vertices_per_cube; j++) {
-        let dist = distance(mouse_pos, (*voxel).particles[j].x);
-        if (dist < min_dist) {
-            min_dist = dist;
-            closest_index = j;
-        }
-    }
-    return closest_index;
-}
-
 @compute @workgroup_size(1, 1, 1)
 fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let cube_index = global_id.x;
@@ -400,10 +388,6 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let mouse_pos = vec3<f32>((uniforms.i_mouse.xy - 0.5 * uniforms.i_resolution) / uniforms.i_resolution.y, 0.0);
 
     var closest_index = -1;
-    if (uniforms.i_mouse.z > 0.0) {
-        //closest_index = find_closest_vertex(mouse_pos, &voxel);
-    }
-
 
     for (var i = 0; i < vertices_per_cube; i++) {
         var particle = voxel.particles[i];
@@ -426,7 +410,7 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let global_particle_index = cube_index * u32(vertices_per_cube) + u32(i);
         var particle = voxel.particles[i];
         var curr_pos = particle.x;
-        particle = handle_boundary_collisions(particle, curr_pos);
+        // particle = handle_boundary_collisions(particle, curr_pos);
         // particle.v = (particle.x - curr_pos) / time_step;
         particles[global_particle_index] = particle;
     }
