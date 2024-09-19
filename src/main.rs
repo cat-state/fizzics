@@ -665,9 +665,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         ..Default::default()
                     });
                     compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-                    // compute_pass.set_pipeline(&collision_pipeline);
-                    // compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                     for _ in 0..4 { 
+                        compute_pass.set_pipeline(&collision_pipeline);
+                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);    
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
                         compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);     
                         compute_pass.set_pipeline(&x_face_constraints_pipeline);

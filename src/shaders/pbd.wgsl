@@ -8,7 +8,7 @@ const mouse_attraction_strength: f32 = 10.0;
 const num_cubes: i32 = 4*4*4;
 const vertices_per_cube: i32 = 8;
 const total_vertices: i32 = num_cubes * vertices_per_cube;
-const cube_collision_radius: f32 = 0.33;
+const cube_collision_radius: f32 = 0.2;
 const boundary: vec3<f32> = vec3<f32>(4.0, 4.0, 4.0);
 struct Particle {
     x: vec3<f32>,
@@ -202,19 +202,19 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
         let correction_next3 = (ideal_next3 - voxel.particles[next3].x) * constraint_stiffness;
 
         // this has no translational bias but causes voxels to spin 
-        // let total_correction = correction_next1 + correction_next2 + correction_next3;
-        // let correction_self = -total_correction / 4.0;
-        // voxel.particles[next1].x += correction_next1 * 0.25;
-        // voxel.particles[next2].x += correction_next2 * 0.25;
-        // voxel.particles[next3].x += correction_next3 * 0.25;
-        // voxel.particles[i].x += correction_self;
-
-        let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
-
-        voxel.particles[next1].x += correction_next1;
-        voxel.particles[next2].x += correction_next2;
-        voxel.particles[next3].x += correction_next3;
+        let total_correction = correction_next1 + correction_next2 + correction_next3;
+        let correction_self = -total_correction / 4.0;
+        voxel.particles[next1].x += correction_next1 * 0.25;
+        voxel.particles[next2].x += correction_next2 * 0.25;
+        voxel.particles[next3].x += correction_next3 * 0.25;
         voxel.particles[i].x += correction_self;
+
+        // let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
+
+        // voxel.particles[next1].x += correction_next1;
+        // voxel.particles[next2].x += correction_next2;
+        // voxel.particles[next3].x += correction_next3;
+        // voxel.particles[i].x += correction_self;
     }
     return voxel;
 }
