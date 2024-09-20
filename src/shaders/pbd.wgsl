@@ -1,6 +1,6 @@
 const time_step: f32 = 1.0 / 60.0;
 const gravity: vec3<f32> = vec3<f32>(0.0, -9.8, 0.0);
-const constraint_stiffness: f32 = 0.9;
+const constraint_stiffness: f32 = 0.5;
 const face_constraint_stiffness: f32 = 0.001;
 const rest_length: f32 = 0.5;
 const collision_damping: f32 = 0.03;
@@ -8,7 +8,7 @@ const mouse_attraction_strength: f32 = 10.0;
 const num_cubes: i32 = 8*8*8;
 const vertices_per_cube: i32 = 8;
 const total_vertices: i32 = num_cubes * vertices_per_cube;
-const cube_collision_radius: f32 = 0.2;
+const cube_collision_radius: f32 = 0.25;
 const boundary: vec3<f32> = vec3<f32>(100.0, 4.0, 100.0);
 struct Particle {
     x: vec3<f32>,
@@ -57,7 +57,6 @@ fn get_voxel(idx: u32) -> Voxel {
 @group(0) @binding(1) var<uniform> uniforms: Uniforms;
 @group(0) @binding(2) var<storage, read_write> face_constraints: array<FaceConstraint>;
 
-// https://github.com/mikolalysenko/rotation-averaging/blob/master/rotation-averaging.js
 fn extract_rotation(A: mat3x3<f32>, q: vec4<f32>, max_iter: u32) -> vec4<f32> {
     var q_out = q;
     for (var iter: u32 = 0u; iter < max_iter; iter++) {
@@ -229,78 +228,101 @@ fn quaternion_from_matrix(m: mat3x3<f32>) -> vec4<f32> {
 
 fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
     var voxel = _voxel;
-    for (var _i: u32 = 0; _i < u32(vertices_per_cube); _i++) {
-        var i = (_i + uniforms.i_offset) % u32(vertices_per_cube);
-        let next1 = (i + 1) % 4 + (i / 4) * 4;
-        let next2 = (i + 3) % 4 + (i / 4) * 4;
-        let next3 = i ^ 4;
+    var corrections = array<vec3<f32>, 8>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+    var n_corrections = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for (var _step: u32 = 0; _step < 1; _step++) {
+        for (var _i: u32 = 0; _i < u32(vertices_per_cube); _i++) {
+            var i = (_i + uniforms.i_offset) % u32(vertices_per_cube);
+            let next1 = (i + 1) % 4 + (i / 4) * 4;
+            let next2 = (i + 3) % 4 + (i / 4) * 4;
+            let next3 = i ^ 4;
 
-        let edge1 = voxel.particles[next1].x - voxel.particles[i].x;
-        let edge2 = voxel.particles[next2].x - voxel.particles[i].x;
-        let edge3 = voxel.particles[next3].x - voxel.particles[i].x;
+            let edge1 = voxel.particles[next1].x - voxel.particles[i].x;
+            let edge2 = voxel.particles[next2].x - voxel.particles[i].x;
+            let edge3 = voxel.particles[next3].x - voxel.particles[i].x;
 
-        // let edgem = transpose(mat3x3<f32>(edge1, edge2, edge3));
-        // var q: vec4<f32> = voxel.particles[i].q;
-        // if(q[3] == 0.0) {
-        //     // Convert the edge matrix to a quaternion
-        //     let quat_from_matrix = quaternion_from_matrix(edgem);
-        
-        //     // Normalize the quaternion
-        //     q = normalize(quat_from_matrix);
-        // }
+            // let edgem = transpose(mat3x3<f32>(edge1, edge2, edge3));
+            // var q: vec4<f32> = voxel.particles[i].q;
+            // if(q[3] == 0.0) {
+            //     // Convert the edge matrix to a quaternion
+            //     let quat_from_matrix = quaternion_from_matrix(edgem);
+            
+            //     // Normalize the quaternion
+            //     q = normalize(quat_from_matrix);
+            // }
 
-        // q = extract_rotation(edgem, q, u32(10));
-        // voxel.particles[i].q = q;
-        
-        // let us = quaternion_to_matrix(q);
-        // let u1 = normalize(us[0]) * rest_length;
-        // let u2 = normalize(us[1]) * rest_length;
-        // let u3 = normalize(us[2]) * rest_length;
-        // let u1 = normalize(vec3<f32>(us[0][0], us[1][0], us[2][0])) * rest_length;
-        // let u2 = normalize(vec3<f32>(us[0][1], us[1][1], us[2][1])) * rest_length;
-        // let u3 = normalize(vec3<f32>(us[0][2], us[1][2], us[2][2])) * rest_length;
+            // q = extract_rotation(edgem, q, u32(10));
+            // voxel.particles[i].q = q;
+            
+            // let us = quaternion_to_matrix(q);
+            // let u1 = normalize(us[0]) * rest_length;
+            // let u2 = normalize(us[1]) * rest_length;
+            // let u3 = normalize(us[2]) * rest_length;
+            // let u1 = normalize(vec3<f32>(us[0][0], us[1][0], us[2][0])) * rest_length;
+            // let u2 = normalize(vec3<f32>(us[0][1], us[1][1], us[2][1])) * rest_length;
+            // let u3 = normalize(vec3<f32>(us[0][2], us[1][2], us[2][2])) * rest_length;
 
-        let gs_0 = gram_schmidt(edge1, edge2, edge3);
-        let gs_1 = gram_schmidt(edge2, edge3, edge1);
-        let gs_2 = gram_schmidt(edge3, edge1, edge2);
+            let gs_0 = gram_schmidt(edge1, edge2, edge3);
+            let gs_1 = gram_schmidt(edge2, edge3, edge1);
+            let gs_2 = gram_schmidt(edge3, edge1, edge2);
 
-        // u1 = average_on_sphere(u1, gs[1], gs[2]);
-        // u2 = average_on_sphere(u2, gs[2], gs[0]);
-        // u3 = average_on_sphere(u3, gs[0], gs[1]);
+            // u1 = average_on_sphere(u1, gs[1], gs[2]);
+            // u2 = average_on_sphere(u2, gs[2], gs[0]);
+            // u3 = average_on_sphere(u3, gs[0], gs[1]);
 
-       let u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]) * rest_length;
-       let u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]) * rest_length;
-       let u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]) * rest_length;
+            let u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]) * rest_length;
+            let u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]) * rest_length;
+            let u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]) * rest_length;
 
-        // let u4 = normalize(gs_3[0] + gs_5[1] + gs_4[2]) * rest_length;
-        // let u5 = normalize(gs_3[2] + gs_4[0] + gs_5[1]) * rest_length;
-        // let u6 = normalize(gs_3[1] + gs_4[2] + gs_5[0]) * rest_length;
-        // let u1 = average_on_sphere(gs_0[0], gs_2[1], gs_1[2]) * rest_length;
-        // let u2 = average_on_sphere(gs_0[1], gs_1[0], gs_2[2]) * rest_length;
-        // let u3 = average_on_sphere(gs_0[2], gs_1[1], gs_2[0]) * rest_length;
+            // let u4 = normalize(gs_3[0] + gs_5[1] + gs_4[2]) * rest_length;
+            // let u5 = normalize(gs_3[2] + gs_4[0] + gs_5[1]) * rest_length;
+            // let u6 = normalize(gs_3[1] + gs_4[2] + gs_5[0]) * rest_length;
+            // let u1 = average_on_sphere(gs_0[0], gs_2[1], gs_1[2]) * rest_length;
+            // let u2 = average_on_sphere(gs_0[1], gs_1[0], gs_2[2]) * rest_length;
+            // let u3 = average_on_sphere(gs_0[2], gs_1[1], gs_2[0]) * rest_length;
 
-        let ideal_next1 = voxel.particles[i].x + u1;
-        let ideal_next2 = voxel.particles[i].x + u2;
-        let ideal_next3 = voxel.particles[i].x + u3;
+            let ideal_next1 = voxel.particles[i].x + u1;
+            let ideal_next2 = voxel.particles[i].x + u2;
+            let ideal_next3 = voxel.particles[i].x + u3;
 
-        let correction_next1 = (ideal_next1 - voxel.particles[next1].x) * constraint_stiffness;
-        let correction_next2 = (ideal_next2 - voxel.particles[next2].x) * constraint_stiffness;
-        let correction_next3 = (ideal_next3 - voxel.particles[next3].x) * constraint_stiffness;
+            let correction_next1 = (ideal_next1 - voxel.particles[next1].x) * constraint_stiffness;
+            let correction_next2 = (ideal_next2 - voxel.particles[next2].x) * constraint_stiffness;
+            let correction_next3 = (ideal_next3 - voxel.particles[next3].x) * constraint_stiffness;
 
-        // this has no translational bias but causes voxels to spin 
-        let total_correction = correction_next1 + correction_next2 + correction_next3;
-        let correction_self = -total_correction / 4.0;
-        voxel.particles[next1].x += correction_next1 * 0.25;
-        voxel.particles[next2].x += correction_next2 * 0.25;
-        voxel.particles[next3].x += correction_next3 * 0.25;
-        voxel.particles[i].x += correction_self;
+            // this has no translational bias but causes voxels to spin 
+            let total_correction = correction_next1 + correction_next2 + correction_next3;
+            // let correction_self = -total_correction / 4.0;
+            // voxel.particles[next1].x += correction_next1 * 0.25;
+            // voxel.particles[next2].x += correction_next2 * 0.25;
+            // voxel.particles[next3].x += correction_next3 * 0.25;
+            // voxel.particles[i].x += correction_self;
 
-        // let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
+            let correction_self = -total_correction / 4.0;
 
-        // voxel.particles[next1].x += correction_next1;
-        // voxel.particles[next2].x += correction_next2;
-        // voxel.particles[next3].x += correction_next3;
-        // voxel.particles[i].x += correction_self;
+            corrections[next1] += correction_next1;
+            corrections[next2] += correction_next2;
+            corrections[next3] += correction_next3;
+            corrections[i] += correction_self;
+
+            n_corrections[next1] += 1.0;
+            n_corrections[next2] += 1.0;
+            n_corrections[next3] += 1.0;
+            n_corrections[i] += 1.0;
+            // let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
+
+            // voxel.particles[next1].x += correction_next1;
+            // voxel.particles[next2].x += correction_next2;
+            // voxel.particles[next3].x += correction_next3;
+            // voxel.particles[i].x += correction_self;
+        }
+
+        for (var i = 0; i < vertices_per_cube; i++) {
+            if(n_corrections[i] > 0.0) {
+                voxel.particles[i].x += corrections[i] / n_corrections[i];
+                corrections[i] = vec3<f32>(0.0);
+                n_corrections[i] = 0.0;
+            }
+        }
     }
     return voxel;
 }

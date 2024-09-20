@@ -417,7 +417,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
 
     let (voxels, xyz_constraints) = voxel_cube(8);
+    let (voxels2, xyz_constraints2) = voxel_cube(8);
     let flat_constraints = xyz_constraints.0.into_iter().chain(xyz_constraints.1.into_iter()).chain(xyz_constraints.2.into_iter()).collect::<Vec<FaceConstraint>>();
+    let flat_constraints2 = xyz_constraints2.0.into_iter().chain(xyz_constraints2.1.into_iter()).chain(xyz_constraints2.2.into_iter()).collect::<Vec<FaceConstraint>>();
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
     dbg!( bytemuck::cast_slice::<Voxel, u8>(&voxels).len());
