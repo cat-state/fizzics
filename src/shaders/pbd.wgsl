@@ -5,11 +5,13 @@ const face_constraint_stiffness: f32 = 0.001;
 const rest_length: f32 = 0.5;
 const collision_damping: f32 = 0.03;
 const mouse_attraction_strength: f32 = 10.0;
-const num_cubes: i32 = 8*8*8;
+const num_cubes: i32 = 8*16*2;
 const vertices_per_cube: i32 = 8;
 const total_vertices: i32 = num_cubes * vertices_per_cube;
 const cube_collision_radius: f32 = 0.25;
-const boundary: vec3<f32> = vec3<f32>(100.0, 4.0, 100.0);
+const boundary: vec3<f32> = vec3<f32>(100.0, 16.0, 100.0);
+const boundary_offset: vec3<f32> = vec3<f32>(0.0, -4.0, 0.0);
+const solve_iterations: u32 = 1;
 struct Particle {
     x: vec3<f32>,
     mass: f32,
@@ -230,7 +232,7 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
     var voxel = _voxel;
     var corrections = array<vec3<f32>, 8>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
     var n_corrections = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    for (var _step: u32 = 0; _step < 1; _step++) {
+    for (var _step: u32 = 0; _step < solve_iterations; _step++) {
         for (var _i: u32 = 0; _i < u32(vertices_per_cube); _i++) {
             var i = (_i + uniforms.i_offset) % u32(vertices_per_cube);
             let next1 = (i + 1) % 4 + (i / 4) * 4;
@@ -261,18 +263,23 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
             // let u1 = normalize(vec3<f32>(us[0][0], us[1][0], us[2][0])) * rest_length;
             // let u2 = normalize(vec3<f32>(us[0][1], us[1][1], us[2][1])) * rest_length;
             // let u3 = normalize(vec3<f32>(us[0][2], us[1][2], us[2][2])) * rest_length;
+            var u1: vec3<f32> = edge1;
+            var u2: vec3<f32> = edge2;
+            var u3: vec3<f32> = edge3;
 
-            let gs_0 = gram_schmidt(edge1, edge2, edge3);
-            let gs_1 = gram_schmidt(edge2, edge3, edge1);
-            let gs_2 = gram_schmidt(edge3, edge1, edge2);
+            for(var substep = 0; substep < 1; substep++) {
+                let gs_0 = gram_schmidt(u1, u2, u3);
+                let gs_1 = gram_schmidt(u2, u3, u1);
+                let gs_2 = gram_schmidt(u3, u1, u2);
 
-            // u1 = average_on_sphere(u1, gs[1], gs[2]);
+                // u1 = average_on_sphere(u1, gs[1], gs[2]);
             // u2 = average_on_sphere(u2, gs[2], gs[0]);
             // u3 = average_on_sphere(u3, gs[0], gs[1]);
 
-            let u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]) * rest_length;
-            let u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]) * rest_length;
-            let u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]) * rest_length;
+                u1 = normalize(gs_0[0] + gs_2[1] + gs_1[2]) * rest_length;
+                u2 = normalize(gs_0[1] + gs_1[0] + gs_2[2]) * rest_length;
+                u3 = normalize(gs_0[2] + gs_1[1] + gs_2[0]) * rest_length;
+            }
 
             // let u4 = normalize(gs_3[0] + gs_5[1] + gs_4[2]) * rest_length;
             // let u5 = normalize(gs_3[2] + gs_4[0] + gs_5[1]) * rest_length;
@@ -285,9 +292,9 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
             let ideal_next2 = voxel.particles[i].x + u2;
             let ideal_next3 = voxel.particles[i].x + u3;
 
-            let correction_next1 = (ideal_next1 - voxel.particles[next1].x) * constraint_stiffness;
-            let correction_next2 = (ideal_next2 - voxel.particles[next2].x) * constraint_stiffness;
-            let correction_next3 = (ideal_next3 - voxel.particles[next3].x) * constraint_stiffness;
+            let correction_next1 = (ideal_next1 - voxel.particles[next1].x);
+            let correction_next2 = (ideal_next2 - voxel.particles[next2].x);
+            let correction_next3 = (ideal_next3 - voxel.particles[next3].x);
 
             // this has no translational bias but causes voxels to spin 
             let total_correction = correction_next1 + correction_next2 + correction_next3;
@@ -297,7 +304,7 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
             // voxel.particles[next3].x += correction_next3 * 0.25;
             // voxel.particles[i].x += correction_self;
 
-            let correction_self = -total_correction / 4.0;
+            let correction_self = -total_correction / 3.0;
 
             corrections[next1] += correction_next1;
             corrections[next2] += correction_next2;
@@ -318,7 +325,7 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
 
         for (var i = 0; i < vertices_per_cube; i++) {
             if(n_corrections[i] > 0.0) {
-                voxel.particles[i].x += corrections[i] / n_corrections[i];
+                voxel.particles[i].x += constraint_stiffness * corrections[i] / n_corrections[i];
                 corrections[i] = vec3<f32>(0.0);
                 n_corrections[i] = 0.0;
             }
@@ -330,30 +337,30 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
 fn handle_boundary_collisions(_particle: Particle, prev_pos: vec3<f32>) -> Particle {
     var particle = _particle;
     var velocity = (particle.x - prev_pos);
-    if (particle.x.x < -boundary.x) {
-        particle.x.x = -boundary.x;
+    if ((particle.x.x + boundary_offset.x) < -boundary.x) {
+        particle.x.x = -boundary.x - boundary_offset.x;
         velocity.x *= -collision_damping;
-    } else if (particle.x.x > boundary.x) {
-        particle.x.x = boundary.x;
+    } else if ((particle.x.x + boundary_offset.x) > boundary.x) {
+        particle.x.x = boundary.x - boundary_offset.x;
         velocity.x *= -collision_damping;
     }
 
-    if (particle.x.y < -boundary.y) {
-        particle.x.y = -boundary.y;
+    if ((particle.x.y + boundary_offset.y) < -boundary.y) {
+        particle.x.y = -boundary.y - boundary_offset.y;
         velocity.y *= -collision_damping;
-    } else if (particle.x.y > boundary.y) {
-        particle.x.y = boundary.y;
+    } else if ((particle.x.y + boundary_offset.y) > boundary.y) {
+        particle.x.y = boundary.y - boundary_offset.y;
         velocity.y *= -collision_damping;
     }
 
-    if (particle.x.z < -boundary.z) {
-        particle.x.z = -boundary.z;
+    if ((particle.x.z + boundary_offset.z) < -boundary.z) {
+        particle.x.z = -boundary.z - boundary_offset.z;
         velocity.z *= -collision_damping;
-    } else if (particle.x.z > boundary.z) {
-        particle.x.z = boundary.z;
+    } else if ((particle.x.z + boundary_offset.z) > boundary.z) {
+        particle.x.z = boundary.z - boundary_offset.z;
         velocity.z *= -collision_damping;
     }
-    particle.x = prev_pos + velocity;
+    particle.v = velocity / time_step;
     return particle;
 }
 
@@ -410,12 +417,16 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let mouse_pos = vec3<f32>((uniforms.i_mouse.xy - 0.5 * uniforms.i_resolution) / uniforms.i_resolution.y, 0.0);
 
     var closest_index = -1;
+    var h = time_step;
+    var prev_poses = array<vec3<f32>, 8>(voxel.particles[0].x, voxel.particles[1].x, voxel.particles[2].x, voxel.particles[3].x, voxel.particles[4].x, voxel.particles[5].x, voxel.particles[6].x, voxel.particles[7].x);
 
     for (var i = 0; i < vertices_per_cube; i++) {
         var particle = voxel.particles[i];
         var curr_pos = particle.x;
+        particle.v *= 0.99;
         var velocity = particle.v;
-        var new_pos = curr_pos + velocity * time_step + gravity * time_step * time_step;
+
+        var new_pos = curr_pos + velocity * h + gravity * h * h;
         particle.x = new_pos;
         particle = handle_boundary_collisions(particle, curr_pos);
         voxel.particles[i] = particle;
@@ -425,15 +436,13 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // }
     }
 
-    var prev_poses = array<vec3<f32>, 8>(voxel.particles[0].x, voxel.particles[1].x, voxel.particles[2].x, voxel.particles[3].x, voxel.particles[4].x, voxel.particles[5].x, voxel.particles[6].x, voxel.particles[7].x);
     voxel = apply_gram_schmidt_constraint(voxel);
     
     for (var i = 0; i < vertices_per_cube; i++) {
         let global_particle_index = cube_index * u32(vertices_per_cube) + u32(i);
         var particle = voxel.particles[i];
         var curr_pos = particle.x;
-        // particle = handle_boundary_collisions(particle, curr_pos);
-        // particle.v = (particle.x - curr_pos) / time_step;
+        particle = handle_boundary_collisions(particle, curr_pos);
         particles[global_particle_index] = particle;
     }
 }

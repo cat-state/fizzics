@@ -42,7 +42,7 @@ struct FaceConstraint {
    r: [i32; 4]
 }
 
-fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstraint>, Vec<FaceConstraint>)) {
+fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstraint>, Vec<FaceConstraint>)) {
     /*
      *     7 ---- 6
      *    ..     .|
@@ -67,15 +67,15 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
         na::Vector3::new(0.0, 1.0, 1.0) * 0.5,
     ];
     let zero = na::Vector3::zeros();
-    let center = na::Vector3::new(0.5 * size as f32, 0.5 * size as f32, 0.5 * size as f32);
+    let center = na::Vector3::new(0.5 * size.x as f32, 0.5 * size.y as f32, 0.5 * size.z as f32);
 
     let mut voxels = Vec::new();
     let mut x_constraints = Vec::new();
     let mut y_constraints = Vec::new();
     let mut z_constraints = Vec::new();
-    for x in 0..size {
-        for y in 0..size {
-            for z in 0..size {
+    for x in 0..size.x {
+        for y in 0..size.y {
+            for z in 0..size.z {
                 let p = na::Vector3::new(x as f32, y as f32, z as f32);
                 let voxel = Voxel {
                     particles: offsets.map(|offset| 
@@ -89,10 +89,10 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
                     )
                 };
                 voxels.push(voxel);
-                let midx = x * size * size + y * size + z;
+                let midx = x * size.y * size.z + y * size.z + z;
                 let mpidx = (midx * 8) as i32;
                 if x != 0 {    
-                    let vidx = (x - 1) * size * size + y * size + z;
+                    let vidx = (x - 1) * size.y * size.z + y * size.z + z;
                     let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
                         l: [vpidx + 1, vpidx + 5, vpidx + 6, vpidx + 2],
@@ -100,8 +100,8 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
                     };
                     x_constraints.push(c);
                 }
-                if x != (size - 1) {
-                    let vidx = (x + 1) * size * size + y * size + z;
+                if x != (size.x - 1) {
+                    let vidx = (x + 1) * size.y * size.z + y * size.z + z;
                     let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
                         l: [mpidx + 1, mpidx + 5, mpidx + 6, mpidx + 2],
@@ -110,7 +110,7 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
                     x_constraints.push(c);
                 }
                 if y != 0 {
-                    let vidx = x * size * size + (y - 1) * size + z;
+                    let vidx = x * size.y * size.z + (y - 1) * size.z + z;
                     let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
                         l: [mpidx + 0, mpidx + 4, mpidx + 5, mpidx + 1],
@@ -118,8 +118,8 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
                     };
                     y_constraints.push(c);
                 }
-                if y != (size - 1) {
-                    let vidx = x * size * size + (y + 1) * size + z;
+                if y != (size.y - 1) {
+                    let vidx = x * size.y * size.z + (y + 1) * size.z + z;
                     let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
                         l: [vpidx + 0, vpidx + 4, vpidx + 5, vpidx + 1],
@@ -128,7 +128,7 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
                     y_constraints.push(c);
                 }
                 if z != 0 {
-                    let vidx = x * size * size + y * size + (z - 1);
+                    let vidx = x * size.y * size.z + y * size.z + (z - 1);
                     let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
                         l: [mpidx + 0, mpidx + 1, mpidx + 2, mpidx + 3],
@@ -136,8 +136,8 @@ fn voxel_cube(size: u32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstrain
                     };
                     z_constraints.push(c);
                 }
-                if z != (size - 1) {
-                    let vidx = x * size * size + y * size + (z + 1);
+                if z != (size.z - 1) {
+                    let vidx = x * size.y * size.z + y * size.z + (z + 1);
                     let vpidx = (vidx * 8) as i32;
                     let c = FaceConstraint {
                         l: [vpidx + 0, vpidx + 1, vpidx + 2, vpidx + 3],
@@ -416,10 +416,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let (voxels, xyz_constraints) = voxel_cube(8);
-    let (voxels2, xyz_constraints2) = voxel_cube(8);
+    let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(8, 16, 2));
     let flat_constraints = xyz_constraints.0.into_iter().chain(xyz_constraints.1.into_iter()).chain(xyz_constraints.2.into_iter()).collect::<Vec<FaceConstraint>>();
-    let flat_constraints2 = xyz_constraints2.0.into_iter().chain(xyz_constraints2.1.into_iter()).chain(xyz_constraints2.2.into_iter()).collect::<Vec<FaceConstraint>>();
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
     dbg!( bytemuck::cast_slice::<Voxel, u8>(&voxels).len());
