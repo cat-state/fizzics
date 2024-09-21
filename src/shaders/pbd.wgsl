@@ -1,6 +1,6 @@
 const time_step: f32 = 1.0 / 60.0;
 const gravity: vec3<f32> = vec3<f32>(0.0, -9.8, 0.0);
-const constraint_stiffness: f32 = 0.5;
+const constraint_stiffness: f32 = 0.3;
 const face_constraint_stiffness: f32 = 0.001;
 const rest_length: f32 = 0.5;
 const collision_damping: f32 = 0.03;
@@ -297,24 +297,41 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
             let correction_next3 = (ideal_next3 - voxel.particles[next3].x);
 
             // this has no translational bias but causes voxels to spin 
-            let total_correction = correction_next1 + correction_next2 + correction_next3;
+            // let total_correction = correction_next1 + correction_next2 + correction_next3;
             // let correction_self = -total_correction / 4.0;
             // voxel.particles[next1].x += correction_next1 * 0.25;
             // voxel.particles[next2].x += correction_next2 * 0.25;
             // voxel.particles[next3].x += correction_next3 * 0.25;
             // voxel.particles[i].x += correction_self;
 
-            let correction_self = -total_correction / 3.0;
+            let total_correction = correction_next1 + correction_next2 + correction_next3;
 
-            corrections[next1] += correction_next1;
-            corrections[next2] += correction_next2;
-            corrections[next3] += correction_next3;
-            corrections[i] += correction_self;
+            // according to o1
+            // Distribute corrections equally (assuming equal mass particles)
+            let correction_per_particle = total_correction / 4.0;
 
+            corrections[next1] += correction_next1 - correction_per_particle;
+            corrections[next2] += correction_next2 - correction_per_particle;
+            corrections[next3] += correction_next3 - correction_per_particle;
+            corrections[i] -= correction_per_particle * 3.0; // To ensure net zero correction
+
+            // Update n_corrections accordingly
             n_corrections[next1] += 1.0;
             n_corrections[next2] += 1.0;
             n_corrections[next3] += 1.0;
-            n_corrections[i] += 1.0;
+            n_corrections[i] += 3.0;
+
+            // let correction_self = -total_correction / 3.0;
+
+            // corrections[next1] += correction_next1;
+            // corrections[next2] += correction_next2;
+            // corrections[next3] += correction_next3;
+            // corrections[i] += correction_self;
+
+            // n_corrections[next1] += 1.0;
+            // n_corrections[next2] += 1.0;
+            // n_corrections[next3] += 1.0;
+            // n_corrections[i] += 1.0;
             // let correction_self = -(correction_next1 + correction_next2 + correction_next3) / 3.0;
 
             // voxel.particles[next1].x += correction_next1;
@@ -336,7 +353,7 @@ fn apply_gram_schmidt_constraint(_voxel: Voxel) -> Voxel {
 
 fn handle_boundary_collisions(_particle: Particle, prev_pos: vec3<f32>) -> Particle {
     var particle = _particle;
-    var velocity = (particle.x - prev_pos);
+    var velocity = particle.v;
     if ((particle.x.x + boundary_offset.x) < -boundary.x) {
         particle.x.x = -boundary.x - boundary_offset.x;
         velocity.x *= -collision_damping;
@@ -360,7 +377,7 @@ fn handle_boundary_collisions(_particle: Particle, prev_pos: vec3<f32>) -> Parti
         particle.x.z = boundary.z - boundary_offset.z;
         velocity.z *= -collision_damping;
     }
-    particle.v = velocity / time_step;
+    particle.v = velocity;
     return particle;
 }
 
@@ -423,18 +440,20 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
     for (var i = 0; i < vertices_per_cube; i++) {
         var particle = voxel.particles[i];
         var curr_pos = particle.x;
-        particle.v *= 0.99;
         var velocity = particle.v;
 
         var new_pos = curr_pos + velocity * h + gravity * h * h;
         particle.x = new_pos;
+        particle.v = (new_pos - curr_pos) / h;
         particle = handle_boundary_collisions(particle, curr_pos);
         voxel.particles[i] = particle;
         // if (i == closest_index) {
         //     let to_mouse = mouse_pos - new_pos;
         //     new_pos += to_mouse * mouse_attraction_strength * time_step;
         // }
+        prev_poses[i] = particle.x;
     }
+
 
     voxel = apply_gram_schmidt_constraint(voxel);
     
@@ -442,6 +461,8 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let global_particle_index = cube_index * u32(vertices_per_cube) + u32(i);
         var particle = voxel.particles[i];
         var curr_pos = particle.x;
+        particle.v = (curr_pos - prev_poses[i]) * h;
+        particle.v *= 0.99;
         particle = handle_boundary_collisions(particle, curr_pos);
         particles[global_particle_index] = particle;
     }
