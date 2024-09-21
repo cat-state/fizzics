@@ -681,13 +681,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);    
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
                         compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);     
-                        compute_pass.set_pipeline(&x_face_constraints_pipeline);
-                        compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
-                        compute_pass.set_pipeline(&y_face_constraints_pipeline);
-                        compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
-                        compute_pass.set_pipeline(&z_face_constraints_pipeline);
-                        compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
-
+                        for __ in 0..3 {
+                            compute_pass.set_pipeline(&x_face_constraints_pipeline);
+                            compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
+                            compute_pass.set_pipeline(&y_face_constraints_pipeline);
+                            compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
+                            compute_pass.set_pipeline(&z_face_constraints_pipeline);
+                            compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
+                        }
                     }
 
                 }

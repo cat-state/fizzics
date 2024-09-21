@@ -1,6 +1,6 @@
 const time_step: f32 = 1.0 / 60.0;
 const gravity: vec3<f32> = vec3<f32>(0.0, -9.8, 0.0);
-const constraint_stiffness: f32 = 0.3;
+const constraint_stiffness: f32 = 1.0;
 const face_constraint_stiffness: f32 = 0.001;
 const rest_length: f32 = 0.5;
 const collision_damping: f32 = 0.03;
@@ -383,47 +383,47 @@ fn handle_boundary_collisions(_particle: Particle, prev_pos: vec3<f32>) -> Parti
 
 @compute @workgroup_size(1, 1, 1)
 fn handle_particle_collisions(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let particle_index = global_id.x;
-    var p_i = particles[particle_index];
-    let ori_pos = p_i.x;
-    let total_particles = arrayLength(&particles);
-    for (var j = particle_index + 1u; j <total_particles; j++) {
-        if (particle_index / u32(vertices_per_cube) == j / u32(vertices_per_cube)) {
-            continue;
-        }
+    // let particle_index = global_id.x;
+    // var p_i = particles[particle_index];
+    // let ori_pos = p_i.x;
+    // let total_particles = arrayLength(&particles);
+    // for (var j = particle_index + 1u; j <total_particles; j++) {
+    //     if (particle_index / u32(vertices_per_cube) == j / u32(vertices_per_cube)) {
+    //         continue;
+    //     }
 
-        var p_j = particles[j];
-        let diff = p_i.x - p_j.x;
-        let distance = length(diff);
+    //     var p_j = particles[j];
+    //     let diff = p_i.x - p_j.x;
+    //     let distance = length(diff);
         
-        if (distance < 2.0 * cube_collision_radius) {
-            let collision_normal = normalize(diff);
-            let overlap = 2.0 * cube_collision_radius - distance;
+    //     if (distance < 2.0 * cube_collision_radius) {
+    //         let collision_normal = normalize(diff);
+    //         let overlap = 2.0 * cube_collision_radius - distance;
             
-            let v1 = p_i.v;
-            let v2 = p_j.v;
+    //         let v1 = p_i.v;
+    //         let v2 = p_j.v;
             
-            let relative_velocity = v1 - v2;
-            let velocity_along_normal = dot(relative_velocity, collision_normal);
+    //         let relative_velocity = v1 - v2;
+    //         let velocity_along_normal = dot(relative_velocity, collision_normal);
             
-            if (velocity_along_normal > 0.0) {
-                continue;
-            }
+    //         if (velocity_along_normal > 0.0) {
+    //             continue;
+    //         }
             
-            let restitution = 0.5;
-            var jr = -(1.0 + restitution) * velocity_along_normal;
-            jr /= 2.0;
+    //         let restitution = 0.5;
+    //         var jr = -(1.0 + restitution) * velocity_along_normal;
+    //         jr /= 2.0;
             
-            let impulse = jr * collision_normal;
+    //         let impulse = jr * collision_normal;
             
-            p_i.x += (impulse + overlap * 0.5 * collision_normal) * (1.0 - collision_damping);
-            p_j.x -= (impulse + overlap * 0.5 * collision_normal) * (1.0 - collision_damping);
-            // data race
-            particles[j] = p_j;
-        }
-    }
-    // also data race
-    particles[particle_index] = p_i;
+    //         p_i.x += (impulse + overlap * 0.5 * collision_normal) * (1.0 - collision_damping);
+    //         p_j.x -= (impulse + overlap * 0.5 * collision_normal) * (1.0 - collision_damping);
+    //         // data race
+    //         particles[j] = p_j;
+    //     }
+    // }
+    // // also data race
+    // particles[particle_index] = p_i;
 }
 
 @compute @workgroup_size(1, 1, 1)
@@ -462,7 +462,7 @@ fn voxel_constraint(@builtin(global_invocation_id) global_id: vec3<u32>) {
         var particle = voxel.particles[i];
         var curr_pos = particle.x;
         particle.v = (curr_pos - prev_poses[i]) * h;
-        particle.v *= 0.99;
+        // particle.v *= 0.;
         particle = handle_boundary_collisions(particle, curr_pos);
         particles[global_particle_index] = particle;
     }
