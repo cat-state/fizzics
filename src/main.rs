@@ -42,12 +42,21 @@ struct FaceConstraint {
    r: [i32; 4]
 }
 
+fn cube_inv_Q(voxel: Voxel) -> na::Matrix3<f32> {
+    let com = voxel.particles.iter().map(|p| p.x).reduce(|a, b| a + b).unwrap() / 8.0;
+    let Q = voxel.particles.iter().map(|p| {
+        let r_i_bar = p.x - com;
+        p.mass * r_i_bar * r_i_bar.transpose()
+    }).reduce(|a, b| a + b).unwrap();
+    dbg!(&Q);
+    Q.try_inverse().expect("Failed to inverse rest shape matrix")
+}
 fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstraint>, Vec<FaceConstraint>)) {
     /*
-     *     7 ---- 6
+     *     6 ---- y
      *    ..     .|
      *   . .    . |
-     *  3 ---- 2  |
+     *  2 ---- 3  |
      *  . \.   |  |
      *  .  4 --|- 5
      *  . .    |.
@@ -302,7 +311,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::empty().union(wgpu::Features::POLYGON_MODE_LINE),
+                required_features: wgpu::Features::empty().union(wgpu::Features::POLYGON_MODE_LINE).union(wgpu::Features::SUBGROUP),
                 required_limits: limits,
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
             },
@@ -418,6 +427,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(8, 16, 2));
     let flat_constraints = xyz_constraints.0.into_iter().chain(xyz_constraints.1.into_iter()).chain(xyz_constraints.2.into_iter()).collect::<Vec<FaceConstraint>>();
+    let iQ = cube_inv_Q(voxels[0]);
+    dbg!(&iQ);
+    return;
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
     dbg!( bytemuck::cast_slice::<Voxel, u8>(&voxels).len());
@@ -602,6 +614,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     let mut i_offset: u32 = 0;
 
+    let mut t0 = std::time::Instant::now();
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
 
@@ -676,7 +690,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         ..Default::default()
                     });
                     compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-                    for _ in 0..20 { 
+                    for _ in 0..4 { 
                         compute_pass.set_pipeline(&collision_pipeline);
                         compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);    
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
@@ -762,6 +776,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
                 queue.submit(Some(encoder.finish()));
                 frame.present();
+                let t1 = std::time::Instant::now();
+                let dt = t1.duration_since(t0).as_secs_f32();
+                t0 = t1;
+                println!("dt: {}", dt);
             }
             _ => {}
         }
