@@ -184,26 +184,26 @@ fn shape_matching(_voxel: array<Particle, 8>, _rest_positions: array<vec3<f32>, 
     f_matrices[voxel_index].grad_C_h = grad_C_h;
 
     
-    // com = vec3<f32>(0.0);
-    // total_mass = 0.0;
-    // for (var i = 0; i < 8; i++) {
-    //     com += particles[i].x * particles[i].mass;
-    //     total_mass += particles[i].mass;
-    // }
-    // com = com * (1.0 / total_mass);
+    com = vec3<f32>(0.0);
+    total_mass = 0.0;
+    for (var i = 0; i < 8; i++) {
+        com += voxel[i].x * voxel[i].mass;
+        total_mass += voxel[i].mass;
+    }
+    com = com * (1.0 / total_mass);
 
-    // F = mat3x3<f32>(0.0, 0.0, 0.0,
-    //                 0.0, 0.0, 0.0,
-    //                 0.0, 0.0, 0.0);
-    // for (var i = 0; i < 8; i++) {
-    //     let dx = particles[i].x - com;
-    //     F += particles[i].mass * outer_product(dx, rest_positions[i]);
-    // }
-    // F = F * q_inv;
+    F = mat3x3<f32>(0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0);
+    for (var i = 0; i < 8; i++) {
+        let dx = voxel[i].x - com;
+        F += voxel[i].mass * outer_product(dx, rest_positions[i]);
+    }
+    F = F * q_inv;
 
-    // for (var i = 0; i < 8; i++) {
-    //     particles[i].x = (F * rest_positions[i]) + com;
-    // }
+    for (var i = 0; i < 8; i++) {
+        voxel[i].x = (F * rest_positions[i]) + com;
+    }
 
     return voxel;
 }
@@ -245,7 +245,7 @@ fn cube_voxel_shape_matching(@builtin(global_invocation_id) global_id: vec3<u32>
     }
     let q_inv = invert(Q);
 
-    let E = 2.3e2; // youngs modulus of rubber
+    let E = 2.3e1; // youngs modulus of rubber
     let nu = 0.4; // poissons ratio of rubber
     let mu = E / (2.0 * (1.0 + nu));
     let lambda = (E * nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
