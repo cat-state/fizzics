@@ -499,7 +499,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
 
     let mut uniforms = Uniforms {
-        h: (1.0f32 / 60.0f32),
+        h: (1.0f32 / 60.0f32) / 20.0f32,
         _padding: na::Vector3::<f32>::new(0.0, 0.0, 0.0),
         boundary_min: na::Vector3::<f32>::new(-4.0, -4.0, -4.0),
         _padding2: 0.0f32,
@@ -770,7 +770,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         ..Default::default()
                     });
                     compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-                    for _ in 0..1 { 
+                    for _ in 0..20 { 
                         compute_pass.set_pipeline(&apply_velocity_forces_pipeline);
                         compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);

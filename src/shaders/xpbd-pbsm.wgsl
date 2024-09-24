@@ -63,9 +63,9 @@ fn apply_velocity_forces(@builtin(global_invocation_id) global_id: vec3<u32>) {
 }
 
 fn outer_product(a: vec3<f32>, b: vec3<f32>) -> mat3x3<f32> {
-    return transpose(mat3x3<f32>(a.x * b.x, a.x * b.y, a.x * b.z,
-                      a.y * b.x, a.y * b.y, a.y * b.z,
-                      a.z * b.x, a.z * b.y, a.z * b.z));
+    return (mat3x3<f32>(a.x * b.x, a.y * b.x, a.z * b.x,
+                        a.x * b.y, a.y * b.y, a.z * b.y,
+                        a.x * b.z, a.y * b.z, a.z * b.z));
 }
 
 fn trace(m: mat3x3<f32>) -> f32 {
@@ -245,7 +245,7 @@ fn cube_voxel_shape_matching(@builtin(global_invocation_id) global_id: vec3<u32>
     }
     let q_inv = invert(Q);
 
-    let E = 2.5e4; // youngs modulus of rubber
+    let E = 2.3e2; // youngs modulus of rubber
     let nu = 0.4; // poissons ratio of rubber
     let mu = E / (2.0 * (1.0 + nu));
     let lambda = (E * nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
@@ -337,7 +337,7 @@ fn apply_damping(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let angular_velocity = invert(inertia_tensor) * angular_momentum;
 
     // Apply damping
-    let damping_factor = 0.99; // Adjust as needed
+    let damping_factor = 0.001; // Adjust as needed
     for (var i: u32 = 0; i < 8; i++) {
         let r = voxel[i].x - com_position;
         let damped_velocity = com_velocity + cross(angular_velocity, r);
