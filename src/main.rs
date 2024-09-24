@@ -11,6 +11,7 @@ use nalgebra as na;
 use na::allocator::{Allocator};
 use na::base::{DefaultAllocator};
 use rand::Rng;
+use futures_intrusive;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -19,7 +20,8 @@ struct Particle {
     mass: f32,
     v: na::Vector3<f32>,
     _padding: f32,
-    q: na::Quaternion<f32>,
+    x_prev: na::Vector3<f32>,
+    _padding2: f32,
 }
 
 
@@ -42,6 +44,37 @@ struct FaceConstraint {
    r: [i32; 4]
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Force {
+    f: na::Vector3<f32>,
+    particle_index: i32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniforms {
+    h: f32,
+    _padding: na::Vector3<f32>,
+    boundary_min: na::Vector3<f32>,
+    _padding2: f32,
+    boundary_max: na::Vector3<f32>,
+    _padding3: f32,
+}
+
+// Add this struct to match the shader
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct FMatrices {
+    F_h: [[f32; 4]; 3],
+    F_d: [[f32; 4]; 3],
+    lagrange_h: f32,
+    lagrange_d: f32,
+    _padding: [f32; 2],
+    grad_C_h: [[f32; 4]; 8],
+    grad_C_d: [[f32; 4]; 8],
+}
+
 fn cube_inv_Q(voxel: Voxel) -> na::Matrix3<f32> {
     let com = voxel.particles.iter().map(|p| p.x).reduce(|a, b| a + b).unwrap() / 8.0;
     let Q = voxel.particles.iter().map(|p| {
@@ -51,6 +84,7 @@ fn cube_inv_Q(voxel: Voxel) -> na::Matrix3<f32> {
     dbg!(&Q);
     Q.try_inverse().expect("Failed to inverse rest shape matrix")
 }
+
 fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstraint>, Vec<FaceConstraint>)) {
     /*
      *     6 ---- y
@@ -65,15 +99,16 @@ fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<
     // let x_faces = [[1, 2, 3, 2], [5, 4, 7, 6]];
     // let y_faces = [[3, 2, 1, 0], [7, 6, 5, 4]];
     // let z_faces = [[4, 5, 6, 7], [0, 1, 2, 3]];
+    let rest_length = 2.0;
     let offsets = [
-        na::Vector3::new(0.0, 0.0, 0.0) * 0.5,
-        na::Vector3::new(1.0, 0.0, 0.0) * 0.5,
-        na::Vector3::new(1.0, 1.0, 0.0) * 0.5,
-        na::Vector3::new(0.0, 1.0, 0.0) * 0.5,
-        na::Vector3::new(0.0, 0.0, 1.0) * 0.5,
-        na::Vector3::new(1.0, 0.0, 1.0) * 0.5,
-        na::Vector3::new(1.0, 1.0, 1.0) * 0.5,
-        na::Vector3::new(0.0, 1.0, 1.0) * 0.5,
+        na::Vector3::new(-1.0, -1.0, -1.0), // 0b000
+        na::Vector3::new(1.0, -1.0, -1.0),  // 0b001
+        na::Vector3::new(-1.0, 1.0, -1.0),  // 0b010
+        na::Vector3::new(1.0, 1.0, -1.0),   // 0b011
+        na::Vector3::new(-1.0, -1.0, 1.0),  // 0b100
+        na::Vector3::new(1.0, -1.0, 1.0),   // 0b101
+        na::Vector3::new(-1.0, 1.0, 1.0),   // 0b110
+        na::Vector3::new(1.0, 1.0, 1.0)     // 0b111
     ];
     let zero = na::Vector3::zeros();
     let center = na::Vector3::new(0.5 * size.x as f32, 0.5 * size.y as f32, 0.5 * size.z as f32);
@@ -89,11 +124,12 @@ fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<
                 let voxel = Voxel {
                     particles: offsets.map(|offset| 
                         Particle { 
-                            x: p + offset - center, 
+                            x: p + offset * (rest_length / 2.0), 
                             mass: 1.0,
                             v: zero,
                             _padding: 0.0,
-                            q: na::Quaternion::new(0.0, 0.0, 0.0, 0.0)
+                            x_prev: na::Vector3::zeros(),
+                            _padding2: 0.0
                         }
                     )
                 };
@@ -272,17 +308,6 @@ fn icosahedron_sphere(radius: f32, subdivisions: u32) -> Vec<MeshVertex> {
 }
 
 
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct PBDUniforms {
-    i_mouse: na::Vector4<f32>,
-    i_resolution: na::Vector2<f32>,
-    i_frame: i32,
-    constraint_phase: u32,
-    i_offset: u32,
-}
-
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct DrawParticlesUniforms {
@@ -320,9 +345,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .await
         .expect("Failed to create device");
 
-    let voxel_constraints = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Voxel Constraints Shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/pbd.wgsl").into()),
+    let xpbd_pbsm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("XPBD PBSM"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/xpbd-pbsm.wgsl").into()),
     });
 
     let draw_particles_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -354,7 +379,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 binding: 1,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
@@ -362,6 +387,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -382,61 +417,68 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let voxel_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Voxel Constraints Pipeline"),
         layout: Some(&compute_pipeline_layout),
-        module: &voxel_constraints,
-        entry_point: "voxel_constraint",
+        module: &xpbd_pbsm,
+        entry_point: "cube_voxel_shape_matching",
         compilation_options: Default::default(),
         cache: None,
     });
 
-    let collision_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Collision Pipeline"),
+    let apply_velocity_forces_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Apply Velocity Forces Pipeline"),
         layout: Some(&compute_pipeline_layout),
-        module: &voxel_constraints,
-        entry_point: "handle_particle_collisions",
+        module: &xpbd_pbsm,
+        entry_point: "apply_velocity_forces",
         compilation_options: Default::default(),
         cache: None,
     });
 
-    let x_face_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Face Constraints Pipeline"),
+    let update_velocity_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Update Velocity Pipeline"),
         layout: Some(&compute_pipeline_layout),
-        module: &voxel_constraints,
-        entry_point: "apply_x_face_constraints",
+        module: &xpbd_pbsm,
+        entry_point: "update_velocity",
         compilation_options: Default::default(),
         cache: None,
     });
 
-    let y_face_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Face Constraints Pipeline"),
+
+    let boundary_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Boundary Constraints Pipeline"),
         layout: Some(&compute_pipeline_layout),
-        module: &voxel_constraints,
-        entry_point: "apply_y_face_constraints",
+        module: &xpbd_pbsm,
+        entry_point: "boundary_constraints",
         compilation_options: Default::default(),
         cache: None,
     });
-    
 
-    let z_face_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Face Constraints Pipeline"),
+    let apply_damping_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Apply Damping Pipeline"),
         layout: Some(&compute_pipeline_layout),
-        module: &voxel_constraints,
-        entry_point: "apply_z_face_constraints",
+        module: &xpbd_pbsm,
+        entry_point: "apply_damping",
         compilation_options: Default::default(),
         cache: None,
     });
 
-    let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(8, 16, 2));
+    let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(1, 1, 1));
+    // Rotate voxels by 45 degrees around y-axis
+    let rotation = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f32::consts::FRAC_PI_4);
+    let voxels = voxels.into_iter().map(|mut voxel| {
+        for particle in voxel.particles.iter_mut() {
+            particle.x = rotation * particle.x;
+        }
+        voxel
+    }).collect::<Vec<Voxel>>();
     let flat_constraints = xyz_constraints.0.into_iter().chain(xyz_constraints.1.into_iter()).chain(xyz_constraints.2.into_iter()).collect::<Vec<FaceConstraint>>();
     let iQ = cube_inv_Q(voxels[0]);
     dbg!(&iQ);
-    return;
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
     dbg!( bytemuck::cast_slice::<Voxel, u8>(&voxels).len());
     let particle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Particles Buffer"),
         contents: bytemuck::cast_slice(&voxels),
-        usage: wgpu::BufferUsages::STORAGE,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
 
     let constraint_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -444,20 +486,39 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         contents: bytemuck::cast_slice(&flat_constraints),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    
 
-    let mut uniforms = PBDUniforms {
-        i_mouse: na::Vector4::<f32>::new(0.0, 0.0, 0.0, 0.0),
-        i_resolution: na::Vector2::<f32>::new(size.width as f32, size.height as f32),
-        i_frame: 0,
-        constraint_phase: 0,
-        i_offset: 0,
+    let forces = vec![Force {
+        f: na::Vector3::<f32>::new(0.0, -9.8, 0.0),
+        particle_index: -1,
+    }];
+
+    let force_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Forces Buffer"),
+        contents: bytemuck::cast_slice(&forces),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
+    let mut uniforms = Uniforms {
+        h: (1.0f32 / 60.0f32),
+        _padding: na::Vector3::<f32>::new(0.0, 0.0, 0.0),
+        boundary_min: na::Vector3::<f32>::new(-4.0, -4.0, -4.0),
+        _padding2: 0.0f32,
+        boundary_max: na::Vector3::<f32>::new(4.0, 4.0, 4.0),
+        _padding3: 0.0f32,
     };
 
     let pbd_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("PBD Uniforms Buffer"),
         contents: bytemuck::cast_slice(&[uniforms]),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    // In the main function, create a new buffer for F matrices
+    let f_matrices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("F Matrices Buffer"),
+        size: (std::mem::size_of::<FMatrices>() * num_voxels) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
     });
 
     let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -470,11 +531,15 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: pbd_uniforms_buffer.as_entire_binding(),
+                resource: force_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: constraint_buffer.as_entire_binding(),
+                resource: pbd_uniforms_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: f_matrices_buffer.as_entire_binding(),
             },
         ],
     });
@@ -616,6 +681,22 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     let mut t0 = std::time::Instant::now();
 
+    // Add this after creating the particle_buffer
+    let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Staging Buffer"),
+        size: (std::mem::size_of::<Particle>() * num_particles) as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    // Add this after creating the staging_buffer
+    let f_matrices_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("F Matrices Staging Buffer"),
+        size: (std::mem::size_of::<FMatrices>() * num_voxels) as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
 
@@ -652,6 +733,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 window.request_redraw();
             },
             Event::MainEventsCleared => {
+                use std::thread;
+                // thread::sleep(std::time::Duration::from_millis(500));
                 window.request_redraw();
             },
             Event::RedrawRequested(_) => {
@@ -679,9 +762,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     label: Some("Compute Encoder"),
                 });
 
-                let mut rng = rand::thread_rng();
-                let i_offset: u32 = rng.gen_range(0..8);
-                uniforms.i_offset = 0; // i_offset as u32;
                 queue.write_buffer(&pbd_uniforms_buffer, 0, bytemuck::cast_slice(&[uniforms]));
                 queue.submit([]);
                 {
@@ -690,19 +770,17 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         ..Default::default()
                     });
                     compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-                    for _ in 0..4 { 
-                        compute_pass.set_pipeline(&collision_pipeline);
-                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);    
+                    for _ in 0..1 { 
+                        compute_pass.set_pipeline(&apply_velocity_forces_pipeline);
+                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
-                        compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);     
-                        for __ in 0..3 {
-                            compute_pass.set_pipeline(&x_face_constraints_pipeline);
-                            compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
-                            compute_pass.set_pipeline(&y_face_constraints_pipeline);
-                            compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
-                            compute_pass.set_pipeline(&z_face_constraints_pipeline);
-                            compute_pass.dispatch_workgroups(flat_constraints.len() as u32 / 3u32, 1, 1);
-                        }
+                        compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);
+                        compute_pass.set_pipeline(&boundary_constraints_pipeline);
+                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                        compute_pass.set_pipeline(&update_velocity_pipeline);
+                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                        compute_pass.set_pipeline(&apply_damping_pipeline);
+                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                     }
 
                 }
@@ -774,12 +852,93 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     render_pass.draw(0..ico_mesh.len() as u32, 0..num_particles as u32);
                 }
 
+                // Add this after the compute pass and before the render pass
+                encoder.copy_buffer_to_buffer(
+                    &particle_buffer,
+                    0,
+                    &staging_buffer,
+                    0,
+                    (std::mem::size_of::<Particle>() * num_particles) as u64,
+                );
+
+                // Add this after the compute pass and before the render pass
+                encoder.copy_buffer_to_buffer(
+                    &f_matrices_buffer,
+                    0,
+                    &f_matrices_staging_buffer,
+                    0,
+                    (std::mem::size_of::<FMatrices>() * num_voxels) as u64,
+                );
+
                 queue.submit(Some(encoder.finish()));
                 frame.present();
                 let t1 = std::time::Instant::now();
                 let dt = t1.duration_since(t0).as_secs_f32();
                 t0 = t1;
-                println!("dt: {}", dt);
+                // println!("dt: {}", dt);
+
+                // Add this after submitting the encoder and before presenting the frame
+                let buffer_slice = staging_buffer.slice(..);
+                let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+                buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+                    tx.send(result).unwrap();
+                });
+                device.poll(wgpu::Maintain::Wait);
+                if let Some(Ok(())) = pollster::block_on(rx.receive()) {
+                    let data = buffer_slice.get_mapped_range();
+                    let particles: &[Particle] = bytemuck::cast_slice(&data);
+                    
+                    // Log the positions of the first few particles
+                    for (i, particle) in particles.iter().take(8).enumerate() {
+                        println!("Particle {}: position = {:?}", i, particle.x);
+                    }
+                    
+                    drop(data);
+                    staging_buffer.unmap();
+                }
+
+                // After submitting the encoder and before presenting the frame
+                let f_matrices_slice = f_matrices_staging_buffer.slice(..);
+                let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+                f_matrices_slice.map_async(wgpu::MapMode::Read, move |result| {
+                    tx.send(result).unwrap();
+                });
+                device.poll(wgpu::Maintain::Wait);
+                if let Some(Ok(())) = pollster::block_on(rx.receive()) {
+                    let data = f_matrices_slice.get_mapped_range();
+                    let f_matrices: &[FMatrices] = bytemuck::cast_slice(&data);
+                    
+                    // Log the F matrices, Lagrange multipliers, and gradients
+                    for (i, f_matrix) in f_matrices.iter().enumerate() {
+                        println!("Voxel {}: F_h = [", i);
+                        for row in &f_matrix.F_h {
+                            println!("  {:?}", &row[..3]); // Only print the first 3 elements of each row
+                        }
+                        println!("]");
+                        println!("Voxel {}: F_d = [", i);
+                        for row in &f_matrix.F_d {
+                            println!("  {:?}", &row[..3]); // Only print the first 3 elements of each row
+                        }
+                        println!("]");
+                        println!("Voxel {}: Lagrange multiplier (h) = {}", i, f_matrix.lagrange_h);
+                        println!("Voxel {}: Lagrange multiplier (d) = {}", i, f_matrix.lagrange_d);
+                        
+                        println!("Voxel {}: grad_C_h = [", i);
+                        for grad in &f_matrix.grad_C_h {
+                            println!("  {:?}", &grad[..3]); // Only print the first 3 elements of each gradient
+                        }
+                        println!("]");
+                        
+                        println!("Voxel {}: grad_C_d = [", i);
+                        for grad in &f_matrix.grad_C_d {
+                            println!("  {:?}", &grad[..3]); // Only print the first 3 elements of each gradient
+                        }
+                        println!("]");
+                    }
+                    
+                    drop(data);
+                    f_matrices_staging_buffer.unmap();
+                }
             }
             _ => {}
         }

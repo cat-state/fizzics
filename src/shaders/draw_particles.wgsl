@@ -3,7 +3,8 @@ struct Particle {
     mass: f32,
     v: vec3<f32>,
     _padding: f32,
-    q: vec4<f32>
+    x_prev: vec3<f32>,
+    _padding2: f32,
 }
 
 struct Voxel {
