@@ -18,10 +18,20 @@ struct Force {
     particle_index: i32,
 }
 
+struct FaceConstraint {
+    particle_indices: array<u32, 8>,
+}
+
+struct ContactConstraint {
+    num_contacts: atomic<u32>,
+    particle_indices: array<vec2<u32>>,
+}
+
 struct Uniforms {
     h: f32,
     boundary_min: vec3<f32>,
     boundary_max: vec3<f32>,
+    particle_radius: f32,
 }
 
 struct NeoHookean {
@@ -44,7 +54,7 @@ struct FMatrices {
 @group(0) @binding(1) var<storage, read_write> forces: array<Force>;
 @group(0) @binding(2) var<uniform> uniforms: Uniforms;
 @group(0) @binding(3) var<storage, read_write> f_matrices: array<FMatrices>;
-
+@group(0) @binding(4) var<storage, read_write> face_constraints: array<FaceConstraint>;
 
 @compute @workgroup_size(1, 1, 1)
 fn apply_velocity_forces(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -226,12 +236,12 @@ fn cube_voxel_shape_matching(@builtin(global_invocation_id) global_id: vec3<u32>
     var rest_positions = array<vec3<f32>, 8>(
         vec3(-1.0, -1.0, -1.0) * h_length, // 0b000
         vec3(1.0, -1.0, -1.0) * h_length, // 0b001
-        vec3(-1.0, 1.0, -1.0) * h_length, // 0b010
         vec3(1.0, 1.0, -1.0) * h_length, // 0b011
+        vec3(-1.0, 1.0, -1.0) * h_length, // 0b010
         vec3(-1.0, -1.0, 1.0) * h_length, // 0b100
         vec3(1.0, -1.0, 1.0) * h_length, // 0b101
+        vec3(1.0, 1.0, 1.0) * h_length, // 0b111
         vec3(-1.0, 1.0, 1.0) * h_length, // 0b110
-        vec3(1.0, 1.0, 1.0) * h_length // 0b111
     );
 
     // for a cube, its Q is diag(vec3(volume))
@@ -245,7 +255,7 @@ fn cube_voxel_shape_matching(@builtin(global_invocation_id) global_id: vec3<u32>
     }
     let q_inv = invert(Q);
 
-    let E = 2.3e1; // youngs modulus of rubber
+    let E = 0.1; // youngs modulus of rubber
     let nu = 0.4; // poissons ratio of rubber
     let mu = E / (2.0 * (1.0 + nu));
     let lambda = (E * nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
@@ -257,11 +267,93 @@ fn cube_voxel_shape_matching(@builtin(global_invocation_id) global_id: vec3<u32>
     }
 }
 
+fn apply_face_constraint(_face_constraint: FaceConstraint) {    
+    var face_constraint = _face_constraint;
+    // Load particles referred by the face constraint
+    var face_particles: array<Particle, 8>;
+    for (var i = 0u; i < 8u; i++) {
+        face_particles[i] = particles[face_constraint.particle_indices[i]];
+    }
+
+    // Treat these particles as a voxel and run shape matching
+    let rest_length = 2.0;
+    let h_length = rest_length / 2.0;
+    var rest_positions = array<vec3<f32>, 8>(
+        vec3(-1.0, -1.0, -1.0) * h_length, // 0b000
+        vec3(1.0, -1.0, -1.0) * h_length, // 0b001
+        vec3(1.0, 1.0, -1.0) * h_length, // 0b011
+        vec3(-1.0, 1.0, -1.0) * h_length, // 0b010
+        vec3(-1.0, -1.0, 1.0) * h_length, // 0b100
+        vec3(1.0, -1.0, 1.0) * h_length, // 0b101
+        vec3(1.0, 1.0, 1.0) * h_length, // 0b111
+        vec3(-1.0, 1.0, 1.0) * h_length, // 0b110
+    );
+
+
+    let volume = rest_length * rest_length * rest_length;
+    var Q = mat3x3<f32>(0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0);
+    for (var i = 0; i < 8; i++) {
+        Q += outer_product(rest_positions[i], rest_positions[i]);
+    }
+    let q_inv = invert(Q);
+
+    let E = 2.3e1; // Young's modulus of rubber
+    let nu = 0.4; // Poisson's ratio of rubber
+    let mu = E / (2.0 * (1.0 + nu));
+    let lambda = (E * nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
+    let material = NeoHookean(lambda, mu, 1.0 + (mu / lambda));
+
+    face_particles = shape_matching(face_particles, rest_positions, volume, q_inv, material, u32(0));
+
+    // Update the original particles with the shape-matched results
+    for (var i = 0u; i < 8u; i++) {
+        particles[face_constraint.particle_indices[i]] = face_particles[i];
+    }
+}
+
+@compute @workgroup_size(1, 1, 1)
+fn apply_x_face_constraint(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(num_workgroups) num_workgroups: vec3<u32>) {
+    let face_constraint = face_constraints[global_id.x];
+    apply_face_constraint(face_constraint);
+}
+
+@compute @workgroup_size(1, 1, 1)
+fn apply_y_face_constraint(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(num_workgroups) num_workgroups: vec3<u32>) {
+    let num_constraints = num_workgroups.x;
+    let face_constraint = face_constraints[num_constraints + global_id.x];
+    apply_face_constraint(face_constraint);
+}
+
+@compute @workgroup_size(1, 1, 1)
+fn apply_z_face_constraint(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(num_workgroups) num_workgroups: vec3<u32>) {
+    let num_constraints = num_workgroups.x;
+    let face_constraint = face_constraints[num_constraints * 2 + global_id.x];
+    apply_face_constraint(face_constraint);
+}
+
 @compute @workgroup_size(1, 1, 1)
 fn boundary_constraints(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let particle_index = global_id.x;
     var particle = particles[particle_index];
-    particle.x = clamp(particle.x, uniforms.boundary_min, uniforms.boundary_max);
+    let damping = 0.9999; // Slight damping factor
+    let epsilon = 0.0; //0.001; // Small offset to prevent sticking to the boundary
+
+    // Check each dimension
+    for (var dim = 0; dim < 3; dim++) {
+        if (particle.x[dim] < uniforms.boundary_min[dim]) {
+            // Particle is outside the minimum boundary
+            let t = (uniforms.boundary_min[dim] - particle.x_prev[dim]) / (particle.x[dim] - particle.x_prev[dim]);
+            particle.x[dim] = mix(particle.x_prev[dim], particle.x[dim], t) + epsilon;
+            particle.v[dim] = -particle.v[dim] * damping;
+        } else if (particle.x[dim] > uniforms.boundary_max[dim]) {
+            // Particle is outside the maximum boundary
+            let t = (uniforms.boundary_max[dim] - particle.x_prev[dim]) / (particle.x[dim] - particle.x_prev[dim]);
+            particle.x[dim] = mix(particle.x_prev[dim], particle.x[dim], t) - epsilon;
+            particle.v[dim] = -particle.v[dim] * damping;
+        }
+    }
     particles[particle_index] = particle;
 }
 
@@ -337,7 +429,7 @@ fn apply_damping(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let angular_velocity = invert(inertia_tensor) * angular_momentum;
 
     // Apply damping
-    let damping_factor = 0.001; // Adjust as needed
+    let damping_factor = 0.00; // Adjust as needed
     for (var i: u32 = 0; i < 8; i++) {
         let r = voxel[i].x - com_position;
         let damped_velocity = com_velocity + cross(angular_velocity, r);

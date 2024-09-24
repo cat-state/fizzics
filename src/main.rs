@@ -103,12 +103,12 @@ fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<
     let offsets = [
         na::Vector3::new(-1.0, -1.0, -1.0), // 0b000
         na::Vector3::new(1.0, -1.0, -1.0),  // 0b001
-        na::Vector3::new(-1.0, 1.0, -1.0),  // 0b010
         na::Vector3::new(1.0, 1.0, -1.0),   // 0b011
+        na::Vector3::new(-1.0, 1.0, -1.0),  // 0b010
         na::Vector3::new(-1.0, -1.0, 1.0),  // 0b100
         na::Vector3::new(1.0, -1.0, 1.0),   // 0b101
+        na::Vector3::new(1.0, 1.0, 1.0),     // 0b111
         na::Vector3::new(-1.0, 1.0, 1.0),   // 0b110
-        na::Vector3::new(1.0, 1.0, 1.0)     // 0b111
     ];
     let zero = na::Vector3::zeros();
     let center = na::Vector3::new(0.5 * size.x as f32, 0.5 * size.y as f32, 0.5 * size.z as f32);
@@ -405,6 +405,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
 
@@ -422,6 +432,35 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         compilation_options: Default::default(),
         cache: None,
     });
+
+    let apply_x_face_constraint_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Apply X Face Constraint Pipeline"),
+        layout: Some(&compute_pipeline_layout),
+        module: &xpbd_pbsm,
+        entry_point: "apply_x_face_constraint",
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    let apply_y_face_constraint_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Apply Y Face Constraint Pipeline"),
+        layout: Some(&compute_pipeline_layout),
+        module: &xpbd_pbsm,
+        entry_point: "apply_y_face_constraint",
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    let apply_z_face_constraint_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Apply Z Face Constraint Pipeline"),
+        layout: Some(&compute_pipeline_layout),
+        module: &xpbd_pbsm,
+        entry_point: "apply_z_face_constraint",
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    
+    
 
     let apply_velocity_forces_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Apply Velocity Forces Pipeline"),
@@ -460,7 +499,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(1, 1, 1));
+    let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(4, 4, 4));
     // Rotate voxels by 45 degrees around y-axis
     let rotation = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f32::consts::FRAC_PI_4);
     let voxels = voxels.into_iter().map(|mut voxel| {
@@ -474,6 +513,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     dbg!(&iQ);
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
+    let num_constraints = flat_constraints.len() / 3;
     dbg!( bytemuck::cast_slice::<Voxel, u8>(&voxels).len());
     let particle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Particles Buffer"),
@@ -499,11 +539,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
 
     let mut uniforms = Uniforms {
-        h: (1.0f32 / 60.0f32) / 20.0f32,
+        h: (1.0f32 / 60.0f32),
         _padding: na::Vector3::<f32>::new(0.0, 0.0, 0.0),
-        boundary_min: na::Vector3::<f32>::new(-4.0, -4.0, -4.0),
+        boundary_min: na::Vector3::<f32>::new(-32.0, -4.0, -32.0),
         _padding2: 0.0f32,
-        boundary_max: na::Vector3::<f32>::new(4.0, 4.0, 4.0),
+        boundary_max: na::Vector3::<f32>::new(32.0, 32.0, 32.0),
         _padding3: 0.0f32,
     };
 
@@ -540,6 +580,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: f_matrices_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: constraint_buffer.as_entire_binding(),
             },
         ],
     });
@@ -770,16 +814,22 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         ..Default::default()
                     });
                     compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-                    for _ in 0..20 { 
+                    for _ in 0..1 { 
                         compute_pass.set_pipeline(&apply_velocity_forces_pipeline);
                         compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
                         compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);
-                        compute_pass.set_pipeline(&boundary_constraints_pipeline);
-                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                        // compute_pass.set_pipeline(&apply_x_face_constraint_pipeline);
+                        // compute_pass.dispatch_workgroups(num_constraints as u32, 1, 1);
+                        // compute_pass.set_pipeline(&apply_y_face_constraint_pipeline);
+                        // compute_pass.dispatch_workgroups(num_constraints as u32, 1, 1);
+                        // compute_pass.set_pipeline(&apply_z_face_constraint_pipeline);
+                        // compute_pass.dispatch_workgroups(num_constraints as u32, 1, 1);
                         compute_pass.set_pipeline(&update_velocity_pipeline);
                         compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                         compute_pass.set_pipeline(&apply_damping_pipeline);
+                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                        compute_pass.set_pipeline(&boundary_constraints_pipeline);
                         compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                     }
 
@@ -878,67 +928,67 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 // println!("dt: {}", dt);
 
                 // Add this after submitting the encoder and before presenting the frame
-                let buffer_slice = staging_buffer.slice(..);
-                let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-                buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-                    tx.send(result).unwrap();
-                });
-                device.poll(wgpu::Maintain::Wait);
-                if let Some(Ok(())) = pollster::block_on(rx.receive()) {
-                    let data = buffer_slice.get_mapped_range();
-                    let particles: &[Particle] = bytemuck::cast_slice(&data);
+                // let buffer_slice = staging_buffer.slice(..);
+                // let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+                // buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+                //     tx.send(result).unwrap();
+                // });
+                // device.poll(wgpu::Maintain::Wait);
+                // if let Some(Ok(())) = pollster::block_on(rx.receive()) {
+                //     let data = buffer_slice.get_mapped_range();
+                //     let particles: &[Particle] = bytemuck::cast_slice(&data);
                     
-                    // Log the positions of the first few particles
-                    for (i, particle) in particles.iter().take(8).enumerate() {
-                        println!("Particle {}: position = {:?}", i, particle.x);
-                    }
+                //     // Log the positions of the first few particles
+                //     for (i, particle) in particles.iter().take(8).enumerate() {
+                //         println!("Particle {}: position = {:?}", i, particle.x);
+                //     }
                     
-                    drop(data);
-                    staging_buffer.unmap();
-                }
+                //     drop(data);
+                //     staging_buffer.unmap();
+                // }
 
                 // After submitting the encoder and before presenting the frame
-                let f_matrices_slice = f_matrices_staging_buffer.slice(..);
-                let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-                f_matrices_slice.map_async(wgpu::MapMode::Read, move |result| {
-                    tx.send(result).unwrap();
-                });
-                device.poll(wgpu::Maintain::Wait);
-                if let Some(Ok(())) = pollster::block_on(rx.receive()) {
-                    let data = f_matrices_slice.get_mapped_range();
-                    let f_matrices: &[FMatrices] = bytemuck::cast_slice(&data);
+                // let f_matrices_slice = f_matrices_staging_buffer.slice(..);
+                // let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+                // f_matrices_slice.map_async(wgpu::MapMode::Read, move |result| {
+                //     tx.send(result).unwrap();
+                // });
+                // device.poll(wgpu::Maintain::Wait);
+                // if let Some(Ok(())) = pollster::block_on(rx.receive()) {
+                //     let data = f_matrices_slice.get_mapped_range();
+                //     let f_matrices: &[FMatrices] = bytemuck::cast_slice(&data);
                     
-                    // Log the F matrices, Lagrange multipliers, and gradients
-                    for (i, f_matrix) in f_matrices.iter().enumerate() {
-                        println!("Voxel {}: F_h = [", i);
-                        for row in &f_matrix.F_h {
-                            println!("  {:?}", &row[..3]); // Only print the first 3 elements of each row
-                        }
-                        println!("]");
-                        println!("Voxel {}: F_d = [", i);
-                        for row in &f_matrix.F_d {
-                            println!("  {:?}", &row[..3]); // Only print the first 3 elements of each row
-                        }
-                        println!("]");
-                        println!("Voxel {}: Lagrange multiplier (h) = {}", i, f_matrix.lagrange_h);
-                        println!("Voxel {}: Lagrange multiplier (d) = {}", i, f_matrix.lagrange_d);
+                //     // Log the F matrices, Lagrange multipliers, and gradients
+                //     for (i, f_matrix) in f_matrices.iter().enumerate() {
+                //         println!("Voxel {}: F_h = [", i);
+                //         for row in &f_matrix.F_h {
+                //             println!("  {:?}", &row[..3]); // Only print the first 3 elements of each row
+                //         }
+                //         println!("]");
+                //         println!("Voxel {}: F_d = [", i);
+                //         for row in &f_matrix.F_d {
+                //             println!("  {:?}", &row[..3]); // Only print the first 3 elements of each row
+                //         }
+                //         println!("]");
+                //         println!("Voxel {}: Lagrange multiplier (h) = {}", i, f_matrix.lagrange_h);
+                //         println!("Voxel {}: Lagrange multiplier (d) = {}", i, f_matrix.lagrange_d);
                         
-                        println!("Voxel {}: grad_C_h = [", i);
-                        for grad in &f_matrix.grad_C_h {
-                            println!("  {:?}", &grad[..3]); // Only print the first 3 elements of each gradient
-                        }
-                        println!("]");
+                //         println!("Voxel {}: grad_C_h = [", i);
+                //         for grad in &f_matrix.grad_C_h {
+                //             println!("  {:?}", &grad[..3]); // Only print the first 3 elements of each gradient
+                //         }
+                //         println!("]");
                         
-                        println!("Voxel {}: grad_C_d = [", i);
-                        for grad in &f_matrix.grad_C_d {
-                            println!("  {:?}", &grad[..3]); // Only print the first 3 elements of each gradient
-                        }
-                        println!("]");
-                    }
+                //         println!("Voxel {}: grad_C_d = [", i);
+                //         for grad in &f_matrix.grad_C_d {
+                //             println!("  {:?}", &grad[..3]); // Only print the first 3 elements of each gradient
+                //         }
+                //         println!("]");
+                //     }
                     
-                    drop(data);
-                    f_matrices_staging_buffer.unmap();
-                }
+                //     drop(data);
+                //     f_matrices_staging_buffer.unmap();
+                // }
             }
             _ => {}
         }
