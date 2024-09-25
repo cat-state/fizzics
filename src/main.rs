@@ -61,13 +61,13 @@ struct Force {
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
     h: f32,
-    _padding: na::Vector3<f32>,
+    num_particles: u32,
+    num_voxels: u32,
+    num_constraint_partitions: u32,
     boundary_min: na::Vector3<f32>,
-    _padding2: f32,
+    _padding: f32,
     boundary_max: na::Vector3<f32>,
     particle_radius: f32,
-    num_constraint_partitions: u32,
-    _padding3: na::Vector3<f32>,
 }
 
 // Add this struct to match the shader
@@ -484,7 +484,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(8, 8, 8));
+    let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(16, 16, 16));
 
     // Rotate voxels by 45 degrees around y-axis and x-axis
     let rotation_y = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f32::consts::FRAC_PI_4);
@@ -492,7 +492,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let rotation = rotation_x * rotation_y;
 
     // Calculate the diagonal length of the cube
-    let cube_size = 4.0 * na::Vector3::<f32>::new(8.0, 8.0, 8.0);
+    let cube_size = 4.0 * na::Vector3::<f32>::new(16.0, 16.0, 16.0);
     let diagonal_length = cube_size.magnitude();
     let y_offset = diagonal_length / 2.0;
 
@@ -546,14 +546,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
 
     let mut uniforms = Uniforms {
-        h: (1.0f32 / 60.0f32) / 10.0,
-        _padding: na::Vector3::<f32>::new(0.0, 0.0, 0.0),
+        h: (1.0f32 / 60.0f32) / 20.0,
+        num_particles: num_particles as u32,
+        num_voxels: num_voxels as u32,
+        num_constraint_partitions: num_constraint_partitions,
         boundary_min: na::Vector3::<f32>::new(-3200.0, -4.0, -3200.0),
-        _padding2: 0.0f32,
+        _padding: 0.0,
         boundary_max: na::Vector3::<f32>::new(3200.0, 4000.0, 3200.0),
         particle_radius: 0.1,
-        num_constraint_partitions: num_constraint_partitions,
-        _padding3: na::Vector3::<f32>::new(0.0, 0.0, 0.0),
     };
 
     let pbd_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -808,11 +808,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             },
             Event::RedrawRequested(_) => {
                 // Update camera position and view-projection matrix
-                let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
-                let time = 0.0f64;
-                let camera_x = 128.0 * time.cos() as f32;
-                let camera_z = 128.0 * time.sin() as f32;
-                let camera_y = 128.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
+                let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f32();
+                let time = 0.0f32;
+                let camera_x = 256.0 * time.cos() as f32;
+                let camera_z = 256.0 * time.sin() as f32;
+                let camera_y = 256.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
                 let view = na::Isometry3::look_at_rh(
                     &na::Point3::new(camera_x, camera_y, camera_z),
                     &na::Point3::new(0.0, 0.0, 0.0),
@@ -839,27 +839,21 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         ..Default::default()
                     });
                     compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-                    for _ in 0..10 { 
+                    for _ in 0..20 { 
                         compute_pass.set_pipeline(&apply_velocity_forces_pipeline);
-                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                        compute_pass.dispatch_workgroups((num_particles as u32 + 63) / 64, 1, 1);
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
-                        compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);
+                        compute_pass.dispatch_workgroups((num_voxels as u32 + 63) / 64, 1, 1);
                         compute_pass.set_pipeline(&apply_face_constraint_pipeline);
                         for partition in constraint_partitions.iter() {
-                            compute_pass.dispatch_workgroups(partition.end - partition.start, 1, 1);
+                            compute_pass.dispatch_workgroups(((partition.end - partition.start) + 63) / 64, 1, 1);
                         }
-                        // compute_pass.set_pipeline(&apply_x_face_constraint_pipeline);
-                        // compute_pass.dispatch_workgroups(num_constraints as u32, 1, 1);
-                        // compute_pass.set_pipeline(&apply_y_face_constraint_pipeline);
-                        // compute_pass.dispatch_workgroups(num_constraints as u32, 1, 1);
-                        // compute_pass.set_pipeline(&apply_z_face_constraint_pipeline);
-                        // compute_pass.dispatch_workgroups(num_constraints as u32, 1, 1);
                         compute_pass.set_pipeline(&update_velocity_pipeline);
-                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                        compute_pass.dispatch_workgroups((num_particles as u32 + 63) / 64, 1, 1);
                         compute_pass.set_pipeline(&apply_damping_pipeline);
-                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                        compute_pass.dispatch_workgroups((num_voxels as u32 + 63) / 64, 1, 1);
                         compute_pass.set_pipeline(&boundary_constraints_pipeline);
-                        compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
+                        compute_pass.dispatch_workgroups((num_particles as u32 + 63) / 64, 1, 1);
                     }
 
                 }
