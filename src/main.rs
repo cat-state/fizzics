@@ -40,8 +40,14 @@ struct Voxel {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct FaceConstraint {
-   l: [i32; 4],
-   r: [i32; 4]
+   idxs: [u32; 8]
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct ConstraintPartition {
+    start: u32,
+    end: u32,
 }
 
 #[repr(C)]
@@ -59,7 +65,9 @@ struct Uniforms {
     boundary_min: na::Vector3<f32>,
     _padding2: f32,
     boundary_max: na::Vector3<f32>,
-    _padding3: f32,
+    particle_radius: f32,
+    num_constraint_partitions: u32,
+    _padding3: na::Vector3<f32>,
 }
 
 // Add this struct to match the shader
@@ -100,18 +108,21 @@ fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<
     // let y_faces = [[3, 2, 1, 0], [7, 6, 5, 4]];
     // let z_faces = [[4, 5, 6, 7], [0, 1, 2, 3]];
     let rest_length = 2.0;
+    let flip_x = 0b001;
+    let flip_y = 0b010;
+    let flip_z = 0b100;
     let offsets = [
         na::Vector3::new(-1.0, -1.0, -1.0), // 0b000
         na::Vector3::new(1.0, -1.0, -1.0),  // 0b001
-        na::Vector3::new(1.0, 1.0, -1.0),   // 0b011
         na::Vector3::new(-1.0, 1.0, -1.0),  // 0b010
+        na::Vector3::new(1.0, 1.0, -1.0),   // 0b011
         na::Vector3::new(-1.0, -1.0, 1.0),  // 0b100
         na::Vector3::new(1.0, -1.0, 1.0),   // 0b101
-        na::Vector3::new(1.0, 1.0, 1.0),     // 0b111
         na::Vector3::new(-1.0, 1.0, 1.0),   // 0b110
+        na::Vector3::new(1.0, 1.0, 1.0),     // 0b111
     ];
     let zero = na::Vector3::zeros();
-    let center = na::Vector3::new(0.5 * size.x as f32, 0.5 * size.y as f32, 0.5 * size.z as f32);
+    let center = na::Vector3::new( size.x as f32, 0.0f32, size.z as f32);
 
     let mut voxels = Vec::new();
     let mut x_constraints = Vec::new();
@@ -124,7 +135,7 @@ fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<
                 let voxel = Voxel {
                     particles: offsets.map(|offset| 
                         Particle { 
-                            x: p + offset * (rest_length / 2.0), 
+                            x: 2.0 * rest_length * p + offset * (rest_length / 2.0) - center, 
                             mass: 1.0,
                             v: zero,
                             _padding: 0.0,
@@ -135,58 +146,31 @@ fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<
                 };
                 voxels.push(voxel);
                 let midx = x * size.y * size.z + y * size.z + z;
-                let mpidx = (midx * 8) as i32;
+                let mpidx = (midx * 8) as u32;
                 if x != 0 {    
                     let vidx = (x - 1) * size.y * size.z + y * size.z + z;
-                    let vpidx = (vidx * 8) as i32;
+                    let vpidx = (vidx * 8) as u32;
                     let c = FaceConstraint {
-                        l: [vpidx + 1, vpidx + 5, vpidx + 6, vpidx + 2],
-                        r: [mpidx + 0, mpidx + 4, mpidx + 7, mpidx + 3]
-                    };
-                    x_constraints.push(c);
-                }
-                if x != (size.x - 1) {
-                    let vidx = (x + 1) * size.y * size.z + y * size.z + z;
-                    let vpidx = (vidx * 8) as i32;
-                    let c = FaceConstraint {
-                        l: [mpidx + 1, mpidx + 5, mpidx + 6, mpidx + 2],
-                        r: [vpidx + 0, vpidx + 4, vpidx + 7, vpidx + 3]
+                        idxs: [vpidx ^ flip_x, mpidx, vpidx ^ flip_x ^ flip_y, mpidx ^ flip_y,
+                               vpidx ^ flip_x ^ flip_z, mpidx ^ flip_z, vpidx ^ flip_x ^ flip_y ^ flip_z, mpidx ^ flip_y ^ flip_z]
                     };
                     x_constraints.push(c);
                 }
                 if y != 0 {
                     let vidx = x * size.y * size.z + (y - 1) * size.z + z;
-                    let vpidx = (vidx * 8) as i32;
+                    let vpidx = (vidx * 8) as u32;
                     let c = FaceConstraint {
-                        l: [mpidx + 0, mpidx + 4, mpidx + 5, mpidx + 1],
-                        r: [-(vpidx + 3), -(vpidx + 7), -(vpidx + 6), -(vpidx + 2)]
-                    };
-                    y_constraints.push(c);
-                }
-                if y != (size.y - 1) {
-                    let vidx = x * size.y * size.z + (y + 1) * size.z + z;
-                    let vpidx = (vidx * 8) as i32;
-                    let c = FaceConstraint {
-                        l: [vpidx + 0, vpidx + 4, vpidx + 5, vpidx + 1],
-                        r: [-(mpidx + 3), -(mpidx + 7), -(mpidx + 6), -(mpidx + 2)]
+                        idxs: [vpidx ^ flip_y, vpidx ^ flip_x ^ flip_y, mpidx, mpidx ^ flip_x,
+                               vpidx ^ flip_y ^ flip_z, vpidx ^ flip_x ^ flip_y ^ flip_z, mpidx ^ flip_z, mpidx ^ flip_x ^ flip_z]
                     };
                     y_constraints.push(c);
                 }
                 if z != 0 {
                     let vidx = x * size.y * size.z + y * size.z + (z - 1);
-                    let vpidx = (vidx * 8) as i32;
+                    let vpidx = (vidx * 8) as u32;
                     let c = FaceConstraint {
-                        l: [mpidx + 0, mpidx + 1, mpidx + 2, mpidx + 3],
-                        r: [-(vpidx + 4), -(vpidx + 5), -(vpidx + 6), -(vpidx + 7)]
-                    };
-                    z_constraints.push(c);
-                }
-                if z != (size.z - 1) {
-                    let vidx = x * size.y * size.z + y * size.z + (z + 1);
-                    let vpidx = (vidx * 8) as i32;
-                    let c = FaceConstraint {
-                        l: [vpidx + 0, vpidx + 1, vpidx + 2, vpidx + 3],
-                        r: [-(mpidx + 4), -(mpidx + 5), -(mpidx + 6), -(mpidx + 7)]
+                        idxs: [vpidx ^ flip_z, vpidx ^ flip_x ^ flip_z, vpidx ^ flip_y ^ flip_z, vpidx ^ flip_x ^ flip_y ^ flip_z,
+                               mpidx, mpidx ^ flip_x, mpidx ^ flip_y, mpidx ^ flip_x ^ flip_y]
                     };
                     z_constraints.push(c);
                 }
@@ -415,6 +399,26 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
 
@@ -433,33 +437,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let apply_x_face_constraint_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Apply X Face Constraint Pipeline"),
+    let apply_face_constraint_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Apply Face Constraint Pipeline"),
         layout: Some(&compute_pipeline_layout),
         module: &xpbd_pbsm,
-        entry_point: "apply_x_face_constraint",
+        entry_point: "apply_face_constraint_partition",
         compilation_options: Default::default(),
         cache: None,
     });
-
-    let apply_y_face_constraint_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Apply Y Face Constraint Pipeline"),
-        layout: Some(&compute_pipeline_layout),
-        module: &xpbd_pbsm,
-        entry_point: "apply_y_face_constraint",
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
-    let apply_z_face_constraint_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Apply Z Face Constraint Pipeline"),
-        layout: Some(&compute_pipeline_layout),
-        module: &xpbd_pbsm,
-        entry_point: "apply_z_face_constraint",
-        compilation_options: Default::default(),
-        cache: None,
-    });
-    
     
 
     let apply_velocity_forces_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -499,21 +484,36 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(4, 4, 4));
-    // Rotate voxels by 45 degrees around y-axis
-    let rotation = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f32::consts::FRAC_PI_4);
+    let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(8, 8, 8));
+
+    // Rotate voxels by 45 degrees around y-axis and x-axis
+    let rotation_y = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f32::consts::FRAC_PI_4);
+    let rotation_x = na::Rotation3::from_axis_angle(&na::Vector3::x_axis(), std::f32::consts::FRAC_PI_4);
+    let rotation = rotation_x * rotation_y;
+
+    // Calculate the diagonal length of the cube
+    let cube_size = 4.0 * na::Vector3::<f32>::new(8.0, 8.0, 8.0);
+    let diagonal_length = cube_size.magnitude();
+    let y_offset = diagonal_length / 2.0;
+
     let voxels = voxels.into_iter().map(|mut voxel| {
         for particle in voxel.particles.iter_mut() {
             particle.x = rotation * particle.x;
+            particle.x.y += y_offset; // Apply Y offset
         }
         voxel
     }).collect::<Vec<Voxel>>();
-    let flat_constraints = xyz_constraints.0.into_iter().chain(xyz_constraints.1.into_iter()).chain(xyz_constraints.2.into_iter()).collect::<Vec<FaceConstraint>>();
+    let constraints = vec![xyz_constraints.0, xyz_constraints.1, xyz_constraints.2];
+    let constraint_partitions = constraints.iter().scan(0, |acc, x| {
+        let start = *acc;
+        *acc += x.len() as u32;
+        Some(ConstraintPartition { start, end: *acc })
+    }).collect::<Vec<ConstraintPartition>>();
+    let num_constraint_partitions = constraint_partitions.iter().filter(|c| c.start != c.end).count() as u32;
     let iQ = cube_inv_Q(voxels[0]);
     dbg!(&iQ);
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
-    let num_constraints = flat_constraints.len() / 3;
     dbg!( bytemuck::cast_slice::<Voxel, u8>(&voxels).len());
     let particle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Particles Buffer"),
@@ -521,9 +521,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
 
+    let flat_constraints = constraints.concat();
     let constraint_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Constraints Buffer"),
         contents: bytemuck::cast_slice(&flat_constraints),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
+    let constraint_partitions_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Constraint Partitions Buffer"),
+        contents: bytemuck::cast_slice(&constraint_partitions),
         usage: wgpu::BufferUsages::STORAGE,
     });
 
@@ -539,12 +546,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
 
     let mut uniforms = Uniforms {
-        h: (1.0f32 / 60.0f32),
+        h: (1.0f32 / 60.0f32) / 10.0,
         _padding: na::Vector3::<f32>::new(0.0, 0.0, 0.0),
-        boundary_min: na::Vector3::<f32>::new(-32.0, -4.0, -32.0),
+        boundary_min: na::Vector3::<f32>::new(-3200.0, -4.0, -3200.0),
         _padding2: 0.0f32,
-        boundary_max: na::Vector3::<f32>::new(32.0, 32.0, 32.0),
-        _padding3: 0.0f32,
+        boundary_max: na::Vector3::<f32>::new(3200.0, 4000.0, 3200.0),
+        particle_radius: 0.1,
+        num_constraint_partitions: num_constraint_partitions,
+        _padding3: na::Vector3::<f32>::new(0.0, 0.0, 0.0),
     };
 
     let pbd_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -559,6 +568,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         size: (std::mem::size_of::<FMatrices>() * num_voxels) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
+    });
+
+    let current_partition = 0u32;
+
+    let current_partition_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Current Partition Buffer"),
+        contents: bytemuck::cast_slice(&[current_partition]),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
     let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -585,13 +602,21 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 binding: 4,
                 resource: constraint_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: constraint_partitions_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: current_partition_buffer.as_entire_binding(),
+            },
         ],
     });
 
     let aspect_ratio = size.width as f32 / size.height as f32;
-    let projection = na::Perspective3::new(aspect_ratio, std::f32::consts::FRAC_PI_4, 0.1, 100.0);
+    let projection = na::Perspective3::new(aspect_ratio, std::f32::consts::FRAC_PI_4, 0.1, 1000.0);
     let view = na::Isometry3::look_at_rh(
-        &na::Point3::new(5.0, 5.0, 5.0),
+        &na::Point3::new(10.0, 10.0, 10.0),
         &na::Point3::new(0.0, 0.0, 0.0),
         &na::Vector3::y(),
     );
@@ -785,9 +810,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 // Update camera position and view-projection matrix
                 let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
                 let time = 0.0f64;
-                let camera_x = 16.0 * time.cos() as f32;
-                let camera_z = 16.0 * time.sin() as f32;
-                let camera_y = 15.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
+                let camera_x = 128.0 * time.cos() as f32;
+                let camera_z = 128.0 * time.sin() as f32;
+                let camera_y = 128.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
                 let view = na::Isometry3::look_at_rh(
                     &na::Point3::new(camera_x, camera_y, camera_z),
                     &na::Point3::new(0.0, 0.0, 0.0),
@@ -814,11 +839,15 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         ..Default::default()
                     });
                     compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-                    for _ in 0..1 { 
+                    for _ in 0..10 { 
                         compute_pass.set_pipeline(&apply_velocity_forces_pipeline);
                         compute_pass.dispatch_workgroups(num_particles as u32, 1, 1);
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
                         compute_pass.dispatch_workgroups(num_voxels as u32, 1, 1);
+                        compute_pass.set_pipeline(&apply_face_constraint_pipeline);
+                        for partition in constraint_partitions.iter() {
+                            compute_pass.dispatch_workgroups(partition.end - partition.start, 1, 1);
+                        }
                         // compute_pass.set_pipeline(&apply_x_face_constraint_pipeline);
                         // compute_pass.dispatch_workgroups(num_constraints as u32, 1, 1);
                         // compute_pass.set_pipeline(&apply_y_face_constraint_pipeline);

@@ -44,7 +44,7 @@ fn vertex_main(mesh_vertex: MeshVertex, @builtin(instance_index) instance_id: u3
 
 @fragment
 fn fragment_main(vertex_output: VertexOutput) -> @location(0) vec4<f32> {
-    let light_position = vec3<f32>(10.0, 10.0, 10.0);
+    let light_position = vec3<f32>(10000.0, 10000.0, 10000.0);
     let light_color = vec3<f32>(1.0, 1.0, 1.0);
     let ambient_strength = 0.1;
     
