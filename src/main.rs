@@ -87,6 +87,15 @@ struct FMatrices {
     grad_C_d: [[f32; 4]; 8],
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct TetRest {
+    rest_positions: [[f32; 4]; 4],
+    _padding: [f32; 3],
+    volume: f32,
+    inv_q: [[f32; 4]; 3],
+}
+
 // Add this near the top of the file, after other struct definitions
 struct ComputeConfig {
     workgroup_size: u32,
@@ -126,6 +135,45 @@ fn cube_inv_Q(voxel: Voxel) -> (na::Matrix3<f32>, f32) {
     dbg!(&Q);
     let s = 1.0; //Q.sum();
     (invert(s * Q), s)
+}
+
+fn single_tet_rest(particles: &[Particle]) -> TetRest {
+    let com = particles.iter().map(|p| p.x).reduce(|a, b| a + b).unwrap() / particles.len() as f32;
+    let edge1 = particles[1].x - particles[0].x;
+    let edge2 = particles[2].x - particles[0].x;
+    let edge3 = particles[3].x - particles[0].x;
+    let volume = edge1.cross(&edge2).dot(&edge3).abs() / 6.0;
+    let Q = particles.iter().map(|p| {
+        let r_i_bar = p.x - com;
+        (p.mass as f32) * r_i_bar * r_i_bar.transpose()
+    }).reduce(|a, b| a + b).unwrap();
+    let s = 1.0; //Q.sum();
+    let inv_q = invert(Q);
+    TetRest {
+        rest_positions: particles.iter().map(|p| p.x - com).map(|p| [p.x, p.y, p.z, 0.0]).collect::<Vec<_>>().try_into().unwrap(),
+        _padding: [0.0; 3],
+        volume,
+        inv_q: [[inv_q[0], inv_q[1], inv_q[2], 0.0], 
+                [inv_q[3], inv_q[4], inv_q[5], 0.0], 
+                [inv_q[6], inv_q[7], inv_q[8], 0.0]],
+    }
+}
+
+fn tet_rests(voxel: Voxel) -> Vec<TetRest> {
+    let flip_x = 0b001;
+    let flip_y = 0b010;
+    let flip_z = 0b100;
+    let tet_indices = [
+        [0, flip_x ^ flip_y, flip_y ^ flip_z, flip_x ^ flip_z],
+        [0, flip_x, flip_x ^ flip_z, flip_x ^ flip_y],
+        [0, flip_x ^ flip_y, flip_y ^ flip_z, flip_y],
+        [flip_x ^ flip_y, flip_x ^ flip_z, flip_y ^ flip_z, flip_x ^ flip_y ^ flip_z],
+        [0, flip_y ^ flip_z, flip_x ^ flip_z, flip_z],
+    ];
+    tet_indices.iter().map(|tet_idx| {
+        let particles = tet_idx.iter().map(|idx| voxel.particles[*idx]).collect::<Vec<_>>();
+        single_tet_rest(&particles)
+    }).collect()
 }
 
 fn voxel_cube(size: na::Vector3<i32>, rest_length: f32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstraint>, Vec<FaceConstraint>)) {
@@ -456,6 +504,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
 
@@ -534,9 +592,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let cube_size = na::Vector3::<i32>::new(2, 2, 2);
+    let cube_size = na::Vector3::<i32>::new(32, 32, 32);
 
-    let rest_length = 1.011f32;
+    let rest_length = 0.3f32;
     let wood_density = 1520.0;
     let voxel_mass = rest_length * rest_length * rest_length * wood_density;
     let particle_mass = voxel_mass / 8.0;
@@ -551,8 +609,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         voxel
     }).collect::<Vec<Voxel>>();
     let (iQ, s) = cube_inv_Q(voxels[5]);
+    let rests = tet_rests(voxels[5]);
     dbg!(&iQ);
     dbg!(&s);
+
 
     let mut rng = rand::thread_rng();
     //Rotate voxels by 45 degrees around y-axis and x-axis
@@ -568,11 +628,18 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     let voxels = voxels.into_iter().map(|mut voxel| {
         for particle in voxel.particles.iter_mut() {
-            particle.x = rotation_x * particle.x;
+            // particle.x = rotation_x * particle.x;
         }
         voxel
     }).collect::<Vec<Voxel>>();
     let lowest_particle = voxels.iter().flat_map(|voxel| voxel.particles.iter()).min_by_key(|p| NotNan::new(p.x.y).unwrap()).unwrap().clone();
+
+    // Hollow out the cube by removing the central n x n x n voxels
+    let (voxel_idx, voxels): (Vec<usize>, Vec<Voxel>) = voxels.into_iter().enumerate().filter(|(i, voxel)| {
+        let center = voxel.particles[0].x; // Use the first particle as the voxel's center
+        center.norm() > 38.0f32
+    }).unzip();
+
     let voxels = voxels.into_iter().map(|mut voxel| {
 
         for particle in voxel.particles.iter_mut() {
@@ -583,7 +650,30 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         voxel
     }).collect::<Vec<Voxel>>();
 
+
     let constraints = vec![xyz_constraints.0, xyz_constraints.1, xyz_constraints.2];
+
+    // Reindex constraints after removing some voxels
+    let voxel_idx_map: std::collections::HashMap<u32, u32> = voxel_idx.iter().enumerate()
+        .map(|(new_idx, &old_idx)| (old_idx as u32, new_idx as u32))
+        .collect();
+
+    let reindex_constraint_or_delete = |c: FaceConstraint| {
+        let split_idxs = c.idxs.iter().map(|idx| (idx / 8, idx % 8)).collect::<Vec<_>>();
+        if split_idxs.iter().any(|(voxel_idx, _)| !voxel_idx_map.contains_key(voxel_idx)) {
+            return None;
+        }
+        Some(FaceConstraint {
+            idxs: split_idxs.iter().map(|(voxel_idx, idx)| voxel_idx_map[voxel_idx] * 8 + idx).collect::<Vec<_>>().try_into().unwrap(),
+        })
+    };
+
+    let constraints: Vec<Vec<FaceConstraint>> = constraints.into_iter()
+        .map(|constraint_group| {
+            constraint_group.into_iter().filter_map(reindex_constraint_or_delete).collect::<Vec<_>>()
+        })
+        .collect();
+
     let constraint_partitions = constraints.iter().scan(0, |acc, x| {
         let start = *acc;
         *acc += x.len() as u32;
@@ -635,7 +725,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let iQ = iQ.cast::<f32>();
 
     let mut uniforms = Uniforms {
-        h: (1.0f32 / 100.0f32) / 20.0f32,
+        h: (1.0f32 / 60.0f32) / 20.0f32,
         num_particles: num_particles as u32,
         num_voxels: num_voxels as u32,
         num_constraint_partitions: num_constraint_partitions,
@@ -674,6 +764,13 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
+
+    let rest_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Rest Data Buffer"),
+        contents: bytemuck::cast_slice(&rests),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    });
+
     let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Compute Bind Group"),
         layout: &compute_bind_group_layout,
@@ -709,6 +806,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             wgpu::BindGroupEntry {
                 binding: 7,
                 resource: lagrange_multipliers_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: rest_data_buffer.as_entire_binding(),
             },
         ],
     });
@@ -977,9 +1078,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 // Update camera position and view-projection matrix
                 let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f32();
                 let time = 0.0f32;
-                let camera_x = 10.0 * time.cos() as f32;
-                let camera_z = 10.0 * time.sin() as f32;
-                let camera_y = 10.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
+                let camera_x = 200.0 * time.cos() as f32;
+                let camera_z = 200.0 * time.sin() as f32;
+                let camera_y = 200.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
                 let view = na::Isometry3::look_at_rh(
                     &na::Point3::new(camera_x, camera_y, camera_z),
                     &na::Point3::new(0.0, 0.0, 0.0),
@@ -1021,8 +1122,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         compute_pass.dispatch_workgroups((num_particles as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
                         compute_pass.set_pipeline(&update_velocity_pipeline);
                         compute_pass.dispatch_workgroups((num_particles as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
-                        // compute_pass.set_pipeline(&apply_damping_pipeline);
-                        // compute_pass.dispatch_workgroups((num_voxels as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
+                        compute_pass.set_pipeline(&apply_damping_pipeline);
+                        compute_pass.dispatch_workgroups((num_voxels as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
                     }
 
                 }

@@ -73,6 +73,12 @@ struct FMatrices {
     grad_C_d: array<vec3<f32>, 8>,
 }
 
+struct TetRest {
+    rest_positions: array<vec3<f32>, 4>,
+    _padding: vec3<f32>,
+    volume: f32,
+    inv_q: mat3x3<f32>,
+}
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read_write> forces: array<Force>;
 @group(0) @binding(2) var<uniform> uniforms: Uniforms;
@@ -83,6 +89,7 @@ struct FMatrices {
 @group(0) @binding(6) var<storage, read_write> current_partition: u32;
 
 @group(0) @binding(7) var<storage, read_write> lagrange_multipliers: array<LagrangeMultipliers>;
+@group(0) @binding(8) var<storage, read> tet_rests: array<TetRest>;
 
 @compute @workgroup_size(256, 1, 1)
 fn apply_velocity_forces(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -102,9 +109,9 @@ fn apply_velocity_forces(@builtin(global_invocation_id) global_id: vec3<u32>) {
             total_force += force.f;
         }
     }
-    particle.v += uniforms.h * total_force / particle.mass;
+    // particle.v += uniforms.h * total_force / particle.mass;
     // Update position using explicit integration (Position Verlet)
-    particle.x += particle.v * uniforms.h;
+    particle.x += particle.v * uniforms.h + 0.5 * uniforms.h * uniforms.h * total_force / particle.mass;
     particles[particle_index] = particle;
 }
 
@@ -292,7 +299,6 @@ fn coupled_tetrahedra_shape_matching(_voxel: array<Particle, 4>,
     var rest_positions = _rest_positions;
     var lagrange_multiplier = _lagrange_multiplier;
     var com = vec3<f32>(0.0, 0.0, 0.0);
-    var rest_com = vec3<f32>(0.0, 0.0, 0.0);
     var total_mass = 0.0;
     for (var i = 0; i < 4; i++) {
         com += voxel[i].x * voxel[i].mass;
@@ -304,7 +310,7 @@ fn coupled_tetrahedra_shape_matching(_voxel: array<Particle, 4>,
                     0.0, 0.0, 0.0);
     for (var i = 0; i < 4; i++) {
         let dx = voxel[i].x - com;
-        F += voxel[i].mass * outer_product(dx, rest_positions[i] - rest_com);
+        F += voxel[i].mass * outer_product(dx, rest_positions[i]);
     }
     F = F * q_inv;
 
@@ -326,7 +332,7 @@ fn coupled_tetrahedra_shape_matching(_voxel: array<Particle, 4>,
     }
 
     // Compute A matrix
-    let alpha_h =  1.0 / (volume * material.lambda);
+    let alpha_h = 1.0 / (volume * material.lambda);
     let alpha_d =  1.0 / (volume * material.mu);
     var A = mat2x2<f32>(0.0, 0.0, 0.0, 0.0);
     for (var i = 0; i < 4; i++) {
@@ -340,23 +346,19 @@ fn coupled_tetrahedra_shape_matching(_voxel: array<Particle, 4>,
     A[1][1] += alpha[1];
 
     // Compute b vector
-    let b = vec2<f32>(-C_h, -C_d);
-        //   - vec2<f32>(lagrange_multiplier.lagrange_h * alpha[0], 
-        //               lagrange_multiplier.lagrange_d * alpha[1]);
+    let b = vec2<f32>(-C_h, -C_d)
+           - vec2<f32>(lagrange_multiplier.lagrange_h * alpha[0], 
+                       lagrange_multiplier.lagrange_d * alpha[1]);
 
     // Solve 2x2 linear system
-    var x = solve_2x2_system(A, b);
+    let delta_lambda = solve_2x2_system(A, b);
 
-
-    let delta_lambda = x;
     lagrange_multiplier.lagrange_h += delta_lambda[0];
     lagrange_multiplier.lagrange_d += delta_lambda[1];
 
     for (var i = 0; i < 4; i++) {
         voxel[i].x += (lagrange_multiplier.lagrange_h * grad_C_h[i] + lagrange_multiplier.lagrange_d * grad_C_d[i]) / voxel[i].mass;
     }
-
-
     // Store results for visualization or debugging
     return TetShapeMatchingResult(voxel, lagrange_multiplier);
 }
@@ -613,8 +615,8 @@ fn cube_voxel_shape_matching(@builtin(global_invocation_id) global_id: vec3<u32>
     }
     let q_inv = invert(Q);
 
-    let E = 8.0e13; // youngs modulus of rubber
-    let nu = 0.4; // poissons ratio of rubber
+    let E = 2.5e14; // youngs modulus of steel
+    let nu = 0.27; // poissons ratio of steel
     let mu = E / (2.0 * (1.0 + nu));
     let lambda = (E * nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
     let material = NeoHookean(lambda, mu, 1.0 + (mu / lambda));
@@ -652,37 +654,9 @@ fn cube_voxel_shape_matching(@builtin(global_invocation_id) global_id: vec3<u32>
             voxel[idxs[2]],
             voxel[idxs[3]],
         );
-        var tet_rest_positions = array<vec3<f32>, 4>(
-            rest_positions[idxs[0]],
-            rest_positions[idxs[1]],
-            rest_positions[idxs[2]],
-            rest_positions[idxs[3]],
-        );
-
-        var rest_com = vec3<f32>(0.0, 0.0, 0.0);
-        for (var j = 0; j < 4; j++) {
-            rest_com += tet_rest_positions[j];
-        }
-        rest_com /= 4.0;
-        for (var j = 0; j < 4; j++) {
-            tet_rest_positions[j] -= rest_com;
-        }
-
-        // Compute the volume of the tetrahedron
-        let edge1 = tet_rest_positions[1] - tet_rest_positions[0];
-        let edge2 = tet_rest_positions[2] - tet_rest_positions[0];
-        let edge3 = tet_rest_positions[3] - tet_rest_positions[0];
-        let tet_volume = abs(dot(edge1, cross(edge2, edge3))) / 6.0;
-        let total_volume_frac = tet_volume / volume;
-        var Q = mat3x3<f32>(
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-        );
-        for (var j = 0; j < 4; j++) {
-            Q +=  tet_particles[j].mass * outer_product(tet_rest_positions[j], tet_rest_positions[j]);
-        }
-        let q_inv = invert(Q);
+        var tet_rest_positions = tet_rests[i].rest_positions;
+        let tet_volume = tet_rests[i].volume;
+        let q_inv = tet_rests[i].inv_q;
         lm = LagrangeMultipliers(0.0, 0.0);
 
         var result = coupled_tetrahedra_shape_matching(tet_particles, tet_rest_positions, tet_volume, q_inv, material, voxel_index * 2 + i, lm);
@@ -722,8 +696,8 @@ fn apply_face_constraint(_face_constraint: FaceConstraint, constraint_id: u32) {
     let volume = rest_length * rest_length * rest_length;
     let q_inv = uniforms.inv_q;
 
-    let E = 8.0e13; // youngs modulus of rubber
-    let nu = 0.4; // poissons ratio of rubber
+    let E = 2.5e14; // youngs modulus of steel
+    let nu = 0.27; // poissons ratio of steel
     let mu = E / (2.0 * (1.0 + nu));
     let lambda = (E * nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
     let material = NeoHookean(lambda, mu, 1.0 + (mu / lambda));
@@ -765,37 +739,9 @@ fn apply_face_constraint(_face_constraint: FaceConstraint, constraint_id: u32) {
             voxel[idxs[2]],
             voxel[idxs[3]],
         );
-        var tet_rest_positions = array<vec3<f32>, 4>(
-            rest_positions[idxs[0]],
-            rest_positions[idxs[1]],
-            rest_positions[idxs[2]],
-            rest_positions[idxs[3]],
-        );
-
-        var rest_com = vec3<f32>(0.0, 0.0, 0.0);
-        for (var j = 0; j < 4; j++) {
-            rest_com += tet_rest_positions[j];
-        }
-        rest_com /= 4.0;
-        for (var j = 0; j < 4; j++) {
-            tet_rest_positions[j] -= rest_com;
-        }
-
-        // Compute the volume of the tetrahedron
-        let edge1 = tet_rest_positions[1] - tet_rest_positions[0];
-        let edge2 = tet_rest_positions[2] - tet_rest_positions[0];
-        let edge3 = tet_rest_positions[3] - tet_rest_positions[0];
-        let tet_volume = abs(dot(edge1, cross(edge2, edge3))) / 6.0;
-        let total_volume_frac = tet_volume / volume;
-        var Q = mat3x3<f32>(
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-        );
-        for (var j = 0; j < 4; j++) {
-            Q +=  tet_particles[j].mass * outer_product(tet_rest_positions[j], tet_rest_positions[j]);
-        }
-        let q_inv = invert(Q);
+        var tet_rest_positions = tet_rests[i].rest_positions;
+        let tet_volume = tet_rests[i].volume;
+        let q_inv = tet_rests[i].inv_q;
         lm = LagrangeMultipliers(0.0, 0.0);
 
         var result = coupled_tetrahedra_shape_matching(tet_particles, tet_rest_positions, tet_volume, q_inv, material, (uniforms.num_voxels + constraint_id) * 2 + i, lm);
