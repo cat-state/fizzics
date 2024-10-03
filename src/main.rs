@@ -12,7 +12,7 @@ use na::allocator::{Allocator};
 use na::base::{DefaultAllocator};
 use rand::Rng;
 use futures_intrusive;
-
+use ordered_float::NotNan;
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Particle {
@@ -38,13 +38,13 @@ struct Voxel {
 // if idx is negative then the predicted pos is negated
 
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct FaceConstraint {
    idxs: [u32; 8]
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
 struct ConstraintPartition {
     start: u32,
     end: u32,
@@ -65,9 +65,12 @@ struct Uniforms {
     num_voxels: u32,
     num_constraint_partitions: u32,
     boundary_min: na::Vector3<f32>,
-    _padding: f32,
+    s: f32,
     boundary_max: na::Vector3<f32>,
     particle_radius: f32,
+    rest_length: f32, 
+    _padding2: [f32; 3],
+    inv_q: [[f32; 4]; 3],
 }
 
 // Add this struct to match the shader
@@ -78,22 +81,54 @@ struct FMatrices {
     F_d: [[f32; 4]; 3],
     lagrange_h: f32,
     lagrange_d: f32,
-    _padding: [f32; 2],
+    C_h: f32,
+    C_d: f32,
     grad_C_h: [[f32; 4]; 8],
     grad_C_d: [[f32; 4]; 8],
 }
 
-fn cube_inv_Q(voxel: Voxel) -> na::Matrix3<f32> {
-    let com = voxel.particles.iter().map(|p| p.x).reduce(|a, b| a + b).unwrap() / 8.0;
-    let Q = voxel.particles.iter().map(|p| {
-        let r_i_bar = p.x - com;
-        p.mass * r_i_bar * r_i_bar.transpose()
-    }).reduce(|a, b| a + b).unwrap();
-    dbg!(&Q);
-    Q.try_inverse().expect("Failed to inverse rest shape matrix")
+// Add this near the top of the file, after other struct definitions
+struct ComputeConfig {
+    workgroup_size: u32,
 }
 
-fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstraint>, Vec<FaceConstraint>)) {
+fn invert(m: na::Matrix3<f32>) -> na::Matrix3<f32> {
+    let a = m[(0, 0)];
+    let b = m[(0, 1)];
+    let c = m[(0, 2)];
+    let d = m[(1, 0)];
+    let e = m[(1, 1)];
+    let f = m[(1, 2)];
+    let g = m[(2, 0)];
+    let h = m[(2, 1)];
+    let i = m[(2, 2)];
+
+    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    let inv_det = 1.0 / det;
+
+    na::Matrix3::new(
+        (e * i - f * h) * inv_det, (c * h - b * i) * inv_det, (b * f - c * e) * inv_det,
+        (f * g - d * i) * inv_det, (a * i - c * g) * inv_det, (c * d - a * f) * inv_det,
+        (d * h - e * g) * inv_det, (b * g - a * h) * inv_det, (a * e - b * d) * inv_det
+    )
+}
+
+
+fn cube_inv_Q(voxel: Voxel) -> (na::Matrix3<f32>, f32) {
+    let total_mass = voxel.particles.iter().map(|p| p.mass as f32).sum::<f32>();
+    let com = voxel.particles.iter().map(|p| p.x.cast::<f32>()).reduce(|a, b| a + b).unwrap() / 8.0f32;
+    let rest_positions = voxel.particles.iter().map(|p| p.x.cast::<f32>() - com).collect::<Vec<_>>();
+    dbg!(&rest_positions);
+    let Q = voxel.particles.iter().map(|p| {
+        let r_i_bar = p.x.cast::<f32>() - com;
+        (p.mass as f32) * r_i_bar * r_i_bar.transpose()
+    }).reduce(|a, b| a + b).unwrap();
+    dbg!(&Q);
+    let s = 1.0;// 1.0/Q.sum();
+    (invert(s * Q), s)
+}
+
+fn voxel_cube(size: na::Vector3<i32>, rest_length: f32) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<FaceConstraint>, Vec<FaceConstraint>)) {
     /*
      *     6 ---- y
      *    ..     .|
@@ -107,7 +142,6 @@ fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<
     // let x_faces = [[1, 2, 3, 2], [5, 4, 7, 6]];
     // let y_faces = [[3, 2, 1, 0], [7, 6, 5, 4]];
     // let z_faces = [[4, 5, 6, 7], [0, 1, 2, 3]];
-    let rest_length = 2.0;
     let flip_x = 0b001;
     let flip_y = 0b010;
     let flip_z = 0b100;
@@ -177,7 +211,6 @@ fn voxel_cube(size: na::Vector3<i32>) -> (Vec<Voxel>, (Vec<FaceConstraint>, Vec<
             }
         }
     }
-   
     (voxels, (x_constraints, y_constraints, z_constraints))
 }
 
@@ -339,12 +372,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         source: wgpu::ShaderSource::Wgsl(include_str!("shaders/draw_particles.wgsl").into()),
     });
 
-    let ico_mesh = icosahedron_sphere(0.4, 1);
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Sphere Mesh Vertex Buffer"),
-        contents: bytemuck::cast_slice(&ico_mesh),
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-    });
 
     let compute_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Compute Bind Group Layout"),
@@ -419,6 +446,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
 
@@ -428,6 +465,12 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         push_constant_ranges: &[],
     });
 
+    // In the main function, add this before creating the compute pipelines
+    let compute_config = ComputeConfig {
+        workgroup_size: 256, // Now tunable from the Rust side
+    };
+
+    // Update the compute pipeline creations (remove the workgroup size from entry points)
     let voxel_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Voxel Constraints Pipeline"),
         layout: Some(&compute_pipeline_layout),
@@ -445,7 +488,15 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         compilation_options: Default::default(),
         cache: None,
     });
-    
+
+    let step_constraint_partition_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Step Constraint Partition Pipeline"),
+        layout: Some(&compute_pipeline_layout),
+        module: &xpbd_pbsm,
+        entry_point: "step_constraint_partition",
+        compilation_options: Default::default(),
+        cache: None,
+    });
 
     let apply_velocity_forces_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Apply Velocity Forces Pipeline"),
@@ -465,7 +516,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-
     let boundary_constraints_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Boundary Constraints Pipeline"),
         layout: Some(&compute_pipeline_layout),
@@ -484,22 +534,51 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let (voxels, xyz_constraints) = voxel_cube(na::Vector3::<i32>::new(16, 16, 16));
+    let cube_size = na::Vector3::<i32>::new(3, 3, 3);
 
-    // Rotate voxels by 45 degrees around y-axis and x-axis
+    let rest_length = 1.011f32;
+    let wood_density = 1520.0;
+    let voxel_mass = 4.0;// rest_length * rest_length * rest_length * wood_density;
+    let particle_mass = voxel_mass / 8.0;
+    let (voxels, xyz_constraints) = voxel_cube(cube_size, rest_length);
+
+
+    let voxels = voxels.into_iter().map(|mut voxel| {
+        let num_particles = voxel.particles.len();
+        for particle in voxel.particles.iter_mut() {
+            particle.mass = particle_mass; //mass / num_particles as f32;
+        }
+        voxel
+    }).collect::<Vec<Voxel>>();
+    let (iQ, s) = cube_inv_Q(voxels[5]);
+    dbg!(&iQ);
+    dbg!(&s);
+
+    let mut rng = rand::thread_rng();
+    let lowest_particle = voxels.iter().flat_map(|voxel| voxel.particles.iter()).min_by_key(|p| NotNan::new(p.x.y).unwrap()).unwrap().clone();
+    let voxels = voxels.into_iter().map(|mut voxel| {
+
+        for particle in voxel.particles.iter_mut() {
+            particle.x.y -= lowest_particle.x.y;
+            // let rs = 1.0f32 * na::Vector3::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0));
+            // particle.x += rs;
+        }
+        voxel
+    }).collect::<Vec<Voxel>>();
+    //Rotate voxels by 45 degrees around y-axis and x-axis
     let rotation_y = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f32::consts::FRAC_PI_4);
+    let rotation_z = na::Rotation3::from_axis_angle(&na::Vector3::z_axis(), std::f32::consts::FRAC_PI_4);
     let rotation_x = na::Rotation3::from_axis_angle(&na::Vector3::x_axis(), std::f32::consts::FRAC_PI_4);
     let rotation = rotation_x * rotation_y;
 
     // Calculate the diagonal length of the cube
-    let cube_size = 4.0 * na::Vector3::<f32>::new(16.0, 16.0, 16.0);
+    let cube_size = 2.0 * rest_length * na::Vector3::<f32>::new(cube_size.x as f32, cube_size.y as f32, cube_size.z as f32);
     let diagonal_length = cube_size.magnitude();
     let y_offset = diagonal_length / 2.0;
 
     let voxels = voxels.into_iter().map(|mut voxel| {
         for particle in voxel.particles.iter_mut() {
-            particle.x = rotation * particle.x;
-            particle.x.y += y_offset; // Apply Y offset
+            particle.x = rotation_x * particle.x;
         }
         voxel
     }).collect::<Vec<Voxel>>();
@@ -509,9 +588,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         *acc += x.len() as u32;
         Some(ConstraintPartition { start, end: *acc })
     }).collect::<Vec<ConstraintPartition>>();
-    let num_constraint_partitions = constraint_partitions.iter().filter(|c| c.start != c.end).count() as u32;
-    let iQ = cube_inv_Q(voxels[0]);
-    dbg!(&iQ);
+    let constraint_partitions = constraint_partitions.into_iter().filter(|c| c.start != c.end).collect::<Vec<ConstraintPartition>>();
+    let num_constraint_partitions = constraint_partitions.len() as u32;
+    let num_constraints = constraint_partitions.iter().map(|c| c.end - c.start).sum::<u32>() as usize;
     let num_voxels = voxels.len();
     let num_particles = num_voxels * 8;
     dbg!( bytemuck::cast_slice::<Voxel, u8>(&voxels).len());
@@ -534,8 +613,15 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         usage: wgpu::BufferUsages::STORAGE,
     });
 
+    let lagrange_multipliers = vec![0.0f32; (num_voxels + num_constraints) * 2];
+    let lagrange_multipliers_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Lagrange Multipliers Buffer"),
+        contents: bytemuck::cast_slice(&lagrange_multipliers),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
     let forces = vec![Force {
-        f: na::Vector3::<f32>::new(0.0, -9.8, 0.0),
+        f: na::Vector3::<f32>::new(0.0, 0.0 * -9.8 * particle_mass, 0.0),
         particle_index: -1,
     }];
 
@@ -545,15 +631,24 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         usage: wgpu::BufferUsages::STORAGE,
     });
 
+    let iQ = iQ.cast::<f32>();
+
     let mut uniforms = Uniforms {
-        h: (1.0f32 / 60.0f32) / 20.0,
+        h: (1.0f32 / 100.0f32) / 20.0f32,
         num_particles: num_particles as u32,
         num_voxels: num_voxels as u32,
         num_constraint_partitions: num_constraint_partitions,
-        boundary_min: na::Vector3::<f32>::new(-3200.0, -4.0, -3200.0),
-        _padding: 0.0,
+        boundary_min: na::Vector3::<f32>::new(-3200.0, -10.0, -3200.0),
+        s: s as f32,
         boundary_max: na::Vector3::<f32>::new(3200.0, 4000.0, 3200.0),
         particle_radius: 0.1,
+        rest_length,
+        _padding2: [0.0; 3],
+        inv_q: [
+            [iQ[0], iQ[1], iQ[2], 0.0],
+            [iQ[3], iQ[4], iQ[5], 0.0],
+            [iQ[6], iQ[7], iQ[8], 0.0],
+        ]
     };
 
     let pbd_uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -565,7 +660,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     // In the main function, create a new buffer for F matrices
     let f_matrices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("F Matrices Buffer"),
-        size: (std::mem::size_of::<FMatrices>() * num_voxels) as u64,
+        size: (std::mem::size_of::<FMatrices>() * (num_voxels + num_constraints)) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -610,6 +705,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 binding: 6,
                 resource: current_partition_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: lagrange_multipliers_buffer.as_entire_binding(),
+            },
         ],
     });
 
@@ -631,6 +730,13 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         label: Some("Draw Particles Uniforms Buffer"),
         contents: bytemuck::cast_slice(&[draw_particles_uniforms]),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let ico_mesh = icosahedron_sphere(rest_length / 2.1, 1);
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Sphere Mesh Vertex Buffer"),
+        contents: bytemuck::cast_slice(&ico_mesh),
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
     });
 
     let render_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -656,8 +762,20 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
+
+    // Create a buffer for face constraints
 
     let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Render Bind Group"),
@@ -670,6 +788,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: draw_particles_uniforms_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: constraint_buffer.as_entire_binding(),
             },
         ],
     });
@@ -746,6 +868,50 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
+    let wireframe_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Wireframe Pipeline"),
+        layout: Some(&render_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &draw_particles_shader,
+            entry_point: "vertex_main_wireframe",
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &draw_particles_shader,
+            entry_point: "fragment_main_wireframe",
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: config.format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Line,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview: None,
+        cache: None,
+    });
+
     let mut i_offset: u32 = 0;
 
     let mut t0 = std::time::Instant::now();
@@ -761,7 +927,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     // Add this after creating the staging_buffer
     let f_matrices_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("F Matrices Staging Buffer"),
-        size: (std::mem::size_of::<FMatrices>() * num_voxels) as u64,
+        size: (std::mem::size_of::<FMatrices>() * (num_voxels + num_constraints)) as u64,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -803,16 +969,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             },
             Event::MainEventsCleared => {
                 use std::thread;
-                // thread::sleep(std::time::Duration::from_millis(500));
+                // thread::sleep(std::time::Duration::from_millis(1000));
                 window.request_redraw();
             },
             Event::RedrawRequested(_) => {
                 // Update camera position and view-projection matrix
                 let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f32();
                 let time = 0.0f32;
-                let camera_x = 256.0 * time.cos() as f32;
-                let camera_z = 256.0 * time.sin() as f32;
-                let camera_y = 256.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
+                let camera_x = 40.0 * time.cos() as f32;
+                let camera_z = 40.0 * time.sin() as f32;
+                let camera_y = 40.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
                 let view = na::Isometry3::look_at_rh(
                     &na::Point3::new(camera_x, camera_y, camera_z),
                     &na::Point3::new(0.0, 0.0, 0.0),
@@ -841,19 +1007,22 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     compute_pass.set_bind_group(0, &compute_bind_group, &[]);
                     for _ in 0..20 { 
                         compute_pass.set_pipeline(&apply_velocity_forces_pipeline);
-                        compute_pass.dispatch_workgroups((num_particles as u32 + 63) / 64, 1, 1);
+                        compute_pass.dispatch_workgroups((num_particles as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
                         compute_pass.set_pipeline(&voxel_constraints_pipeline);
-                        compute_pass.dispatch_workgroups((num_voxels as u32 + 63) / 64, 1, 1);
-                        compute_pass.set_pipeline(&apply_face_constraint_pipeline);
+                        compute_pass.dispatch_workgroups((num_voxels as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
                         for partition in constraint_partitions.iter() {
-                            compute_pass.dispatch_workgroups(((partition.end - partition.start) + 63) / 64, 1, 1);
+                            compute_pass.set_pipeline(&apply_face_constraint_pipeline);
+                            compute_pass.dispatch_workgroups(((partition.end - partition.start) + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
+                            compute_pass.set_pipeline(&step_constraint_partition_pipeline);
+                            compute_pass.dispatch_workgroups(1, 1, 1);
                         }
                         compute_pass.set_pipeline(&update_velocity_pipeline);
-                        compute_pass.dispatch_workgroups((num_particles as u32 + 63) / 64, 1, 1);
-                        compute_pass.set_pipeline(&apply_damping_pipeline);
-                        compute_pass.dispatch_workgroups((num_voxels as u32 + 63) / 64, 1, 1);
+                        compute_pass.dispatch_workgroups((num_particles as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
                         compute_pass.set_pipeline(&boundary_constraints_pipeline);
-                        compute_pass.dispatch_workgroups((num_particles as u32 + 63) / 64, 1, 1);
+                        compute_pass.dispatch_workgroups((num_particles as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
+
+                        // compute_pass.set_pipeline(&apply_damping_pipeline);
+                        // compute_pass.dispatch_workgroups((num_voxels as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
                     }
 
                 }
@@ -925,32 +1094,54 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     render_pass.draw(0..ico_mesh.len() as u32, 0..num_particles as u32);
                 }
 
-                // Add this after the compute pass and before the render pass
-                encoder.copy_buffer_to_buffer(
-                    &particle_buffer,
-                    0,
-                    &staging_buffer,
-                    0,
-                    (std::mem::size_of::<Particle>() * num_particles) as u64,
-                );
+                {
+                    // let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    //     label: Some("Wireframe Pass"),
+                    //     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    //         view: &view,
+                    //         resolve_target: None,
+                    //         ops: wgpu::Operations {
+                    //             load: wgpu::LoadOp::Load,
+                    //             store: wgpu::StoreOp::Store,
+                    //         },
+                    //     })],
+                    //     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    //         view: &depth_view,
+                    //         depth_ops: Some(wgpu::Operations {
+                    //             load: wgpu::LoadOp::Load,
+                    //             store: wgpu::StoreOp::Store,
+                    //         }),
+                    //         stencil_ops: None,
+                    //     }),
+                    //     ..Default::default()
+                    // });
+                    // render_pass.set_pipeline(&wireframe_pipeline);
+                    // render_pass.set_bind_group(0, &render_bind_group, &[]);
+                    // render_pass.draw(0..16, 0..flat_constraints.len() as u32);
+                }
 
-                // Add this after the compute pass and before the render pass
+                // encoder.copy_buffer_to_buffer(
+                //     &particle_buffer,
+                //     0,
+                //     &staging_buffer,
+                //     0,
+                //     (std::mem::size_of::<Particle>() * num_particles) as u64,
+                // );
+
                 encoder.copy_buffer_to_buffer(
                     &f_matrices_buffer,
                     0,
                     &f_matrices_staging_buffer,
                     0,
-                    (std::mem::size_of::<FMatrices>() * num_voxels) as u64,
+                    (std::mem::size_of::<FMatrices>() * (num_voxels + num_constraints)) as u64,
                 );
 
                 queue.submit(Some(encoder.finish()));
                 frame.present();
                 let t1 = std::time::Instant::now();
                 let dt = t1.duration_since(t0).as_secs_f32();
-                t0 = t1;
                 // println!("dt: {}", dt);
 
-                // Add this after submitting the encoder and before presenting the frame
                 // let buffer_slice = staging_buffer.slice(..);
                 // let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
                 // buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -961,7 +1152,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 //     let data = buffer_slice.get_mapped_range();
                 //     let particles: &[Particle] = bytemuck::cast_slice(&data);
                     
-                //     // Log the positions of the first few particles
                 //     for (i, particle) in particles.iter().take(8).enumerate() {
                 //         println!("Particle {}: position = {:?}", i, particle.x);
                 //     }
@@ -970,48 +1160,52 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 //     staging_buffer.unmap();
                 // }
 
-                // After submitting the encoder and before presenting the frame
-                // let f_matrices_slice = f_matrices_staging_buffer.slice(..);
-                // let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-                // f_matrices_slice.map_async(wgpu::MapMode::Read, move |result| {
-                //     tx.send(result).unwrap();
-                // });
-                // device.poll(wgpu::Maintain::Wait);
-                // if let Some(Ok(())) = pollster::block_on(rx.receive()) {
-                //     let data = f_matrices_slice.get_mapped_range();
-                //     let f_matrices: &[FMatrices] = bytemuck::cast_slice(&data);
-                    
-                //     // Log the F matrices, Lagrange multipliers, and gradients
-                //     for (i, f_matrix) in f_matrices.iter().enumerate() {
-                //         println!("Voxel {}: F_h = [", i);
-                //         for row in &f_matrix.F_h {
-                //             println!("  {:?}", &row[..3]); // Only print the first 3 elements of each row
-                //         }
-                //         println!("]");
-                //         println!("Voxel {}: F_d = [", i);
-                //         for row in &f_matrix.F_d {
-                //             println!("  {:?}", &row[..3]); // Only print the first 3 elements of each row
-                //         }
-                //         println!("]");
-                //         println!("Voxel {}: Lagrange multiplier (h) = {}", i, f_matrix.lagrange_h);
-                //         println!("Voxel {}: Lagrange multiplier (d) = {}", i, f_matrix.lagrange_d);
+                if dt > 0.5 {
+                    t0 = t1;
+                    let f_matrices_slice = f_matrices_staging_buffer.slice(..);
+                    let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+                    f_matrices_slice.map_async(wgpu::MapMode::Read, move |result| {
+                        tx.send(result).unwrap();
+                    });
+                    device.poll(wgpu::Maintain::Wait);
+                    if let Some(Ok(())) = pollster::block_on(rx.receive()) {
+                        let data = f_matrices_slice.get_mapped_range();
+                        let f_matrices: &[FMatrices] = bytemuck::cast_slice(&data);
                         
-                //         println!("Voxel {}: grad_C_h = [", i);
-                //         for grad in &f_matrix.grad_C_h {
-                //             println!("  {:?}", &grad[..3]); // Only print the first 3 elements of each gradient
-                //         }
-                //         println!("]");
-                        
-                //         println!("Voxel {}: grad_C_d = [", i);
-                //         for grad in &f_matrix.grad_C_d {
-                //             println!("  {:?}", &grad[..3]); // Only print the first 3 elements of each gradient
-                //         }
-                //         println!("]");
-                //     }
-                    
-                //     drop(data);
-                //     f_matrices_staging_buffer.unmap();
-                // }
+                        // Log the F matrices, Lagrange multipliers, and gradients
+                        for (i, f_matrix) in f_matrices.iter().take(1).enumerate() {
+                            println!("Voxel {}: F_h = [", i);
+                            for row in &f_matrix.F_h {
+                                println!("  {:?}", &row[..3]); // Only print the first 3 elements of each row
+                            }
+                            println!("]");
+                            println!("Voxel {}: F_d = [", i);
+                            for row in &f_matrix.F_d {
+                                println!("  {:?}", &row[..3]); // Only print the first 3 elements of each row
+                            }
+                            println!("]");
+                            // println!("Voxel {}: Lagrange multiplier (h) = {}", i, f_matrix.lagrange_h);
+                            // println!("Voxel {}: Lagrange multiplier (d) = {}", i, f_matrix.lagrange_d);
+                            // println!("Voxel {}: C_h = {}", i, f_matrix.C_h);
+                            println!("Voxel {}: rest_positions = [", i);
+                            dbg!(&f_matrix.grad_C_h);
+                            // for grad in &f_matrix.grad_C_h {
+                            //     println!("  {:?}", &grad[..3]); // Only print the first 3 elements of each gradient
+                            // }
+                            println!("]");
+                            // println!("Voxel {}: C_d = {}", i, f_matrix.C_d);
+                            // println!("Voxel {}: grad_C_d = [", i);
+                            // for grad in &f_matrix.grad_C_d {
+                            //     println!("  {:?}", &grad[..3]); // Only print the first 3 elements of each gradient
+                            // }
+                            // println!("]");
+                        }
+                        // panic!("end");
+                        drop(data);
+                        f_matrices_staging_buffer.unmap();
+                        // std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                }
             }
             _ => {}
         }
