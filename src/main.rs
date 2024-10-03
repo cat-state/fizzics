@@ -124,7 +124,7 @@ fn cube_inv_Q(voxel: Voxel) -> (na::Matrix3<f32>, f32) {
         (p.mass as f32) * r_i_bar * r_i_bar.transpose()
     }).reduce(|a, b| a + b).unwrap();
     dbg!(&Q);
-    let s = 1.0;// 1.0/Q.sum();
+    let s = 1.0; //Q.sum();
     (invert(s * Q), s)
 }
 
@@ -534,11 +534,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         cache: None,
     });
 
-    let cube_size = na::Vector3::<i32>::new(3, 3, 3);
+    let cube_size = na::Vector3::<i32>::new(2, 2, 2);
 
     let rest_length = 1.011f32;
     let wood_density = 1520.0;
-    let voxel_mass = 4.0;// rest_length * rest_length * rest_length * wood_density;
+    let voxel_mass = rest_length * rest_length * rest_length * wood_density;
     let particle_mass = voxel_mass / 8.0;
     let (voxels, xyz_constraints) = voxel_cube(cube_size, rest_length);
 
@@ -555,16 +555,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     dbg!(&s);
 
     let mut rng = rand::thread_rng();
-    let lowest_particle = voxels.iter().flat_map(|voxel| voxel.particles.iter()).min_by_key(|p| NotNan::new(p.x.y).unwrap()).unwrap().clone();
-    let voxels = voxels.into_iter().map(|mut voxel| {
-
-        for particle in voxel.particles.iter_mut() {
-            particle.x.y -= lowest_particle.x.y;
-            // let rs = 1.0f32 * na::Vector3::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0));
-            // particle.x += rs;
-        }
-        voxel
-    }).collect::<Vec<Voxel>>();
     //Rotate voxels by 45 degrees around y-axis and x-axis
     let rotation_y = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), std::f32::consts::FRAC_PI_4);
     let rotation_z = na::Rotation3::from_axis_angle(&na::Vector3::z_axis(), std::f32::consts::FRAC_PI_4);
@@ -582,6 +572,17 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         }
         voxel
     }).collect::<Vec<Voxel>>();
+    let lowest_particle = voxels.iter().flat_map(|voxel| voxel.particles.iter()).min_by_key(|p| NotNan::new(p.x.y).unwrap()).unwrap().clone();
+    let voxels = voxels.into_iter().map(|mut voxel| {
+
+        for particle in voxel.particles.iter_mut() {
+            particle.x.y -= lowest_particle.x.y;
+            // let rs = 1.0f32 * na::Vector3::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0));
+            // particle.x += rs;
+        }
+        voxel
+    }).collect::<Vec<Voxel>>();
+
     let constraints = vec![xyz_constraints.0, xyz_constraints.1, xyz_constraints.2];
     let constraint_partitions = constraints.iter().scan(0, |acc, x| {
         let start = *acc;
@@ -621,7 +622,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     });
 
     let forces = vec![Force {
-        f: na::Vector3::<f32>::new(0.0, 0.0 * -9.8 * particle_mass, 0.0),
+        f: na::Vector3::<f32>::new(0.0, -9.8 * particle_mass, 0.0),
         particle_index: -1,
     }];
 
@@ -638,7 +639,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         num_particles: num_particles as u32,
         num_voxels: num_voxels as u32,
         num_constraint_partitions: num_constraint_partitions,
-        boundary_min: na::Vector3::<f32>::new(-3200.0, -10.0, -3200.0),
+        boundary_min: na::Vector3::<f32>::new(-3200.0, -4.0, -3200.0),
         s: s as f32,
         boundary_max: na::Vector3::<f32>::new(3200.0, 4000.0, 3200.0),
         particle_radius: 0.1,
@@ -976,9 +977,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 // Update camera position and view-projection matrix
                 let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f32();
                 let time = 0.0f32;
-                let camera_x = 40.0 * time.cos() as f32;
-                let camera_z = 40.0 * time.sin() as f32;
-                let camera_y = 40.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
+                let camera_x = 10.0 * time.cos() as f32;
+                let camera_z = 10.0 * time.sin() as f32;
+                let camera_y = 10.0 ;//+ 2.0 * (time * 0.5).sin() as f32;
                 let view = na::Isometry3::look_at_rh(
                     &na::Point3::new(camera_x, camera_y, camera_z),
                     &na::Point3::new(0.0, 0.0, 0.0),
@@ -1016,11 +1017,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                             compute_pass.set_pipeline(&step_constraint_partition_pipeline);
                             compute_pass.dispatch_workgroups(1, 1, 1);
                         }
-                        compute_pass.set_pipeline(&update_velocity_pipeline);
-                        compute_pass.dispatch_workgroups((num_particles as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
                         compute_pass.set_pipeline(&boundary_constraints_pipeline);
                         compute_pass.dispatch_workgroups((num_particles as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
-
+                        compute_pass.set_pipeline(&update_velocity_pipeline);
+                        compute_pass.dispatch_workgroups((num_particles as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
                         // compute_pass.set_pipeline(&apply_damping_pipeline);
                         // compute_pass.dispatch_workgroups((num_voxels as u32 + compute_config.workgroup_size - 1) / compute_config.workgroup_size, 1, 1);
                     }

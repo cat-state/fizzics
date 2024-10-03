@@ -1,16 +1,20 @@
 // Physically Based Shape Matching
 
-struct Particle {
+struct OrientedParticle {
     x: vec3<f32>,
     mass: f32,
     v: vec3<f32>,
-    _padding: f32,
+    start_edges: u32,
     x_prev: vec3<f32>,
-    _padding2: f32,
+    end_edges: u32,
+    orientation: vec4<f32>,
+    angular_velocity: vec3<f32>,
+    is_oriented: u32,
 }
 
-struct Voxel {
-    particles: array<Particle, 8>,
+struct ShapeGroup {
+    start: u32,
+    end: u32,
 }
 
 struct Force {
@@ -83,6 +87,25 @@ struct FMatrices {
 @group(0) @binding(6) var<storage, read_write> current_partition: u32;
 
 @group(0) @binding(7) var<storage, read_write> lagrange_multipliers: array<LagrangeMultipliers>;
+
+// @compute @workgroup_size(256, 1, 1)
+// fn apply_velocity_forces(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invocation_id) local_id: vec3<u32>) {
+//     if (global_id.x >= uniforms.num_particles) {
+//         return;
+//     }
+//     let particle_index = global_id.x;
+//     var particle = particles[particle_index];
+//     particle.x_prev = particle.x;
+//     let num_forces = 1;
+//     for (var i = 0; i < num_forces; i++) {
+//         let force = forces[i];
+//         if (force.particle_index < 0 || force.particle_index == i32(particle_index)) {
+//             particle.v += uniforms.h * force.f / particle.mass;
+//         }
+//     }
+//     particle.x += particle.v * uniforms.h;
+//     particles[particle_index] = particle;
+// }
 
 @compute @workgroup_size(256, 1, 1)
 fn apply_velocity_forces(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -292,7 +315,6 @@ fn coupled_tetrahedra_shape_matching(_voxel: array<Particle, 4>,
     var rest_positions = _rest_positions;
     var lagrange_multiplier = _lagrange_multiplier;
     var com = vec3<f32>(0.0, 0.0, 0.0);
-    var rest_com = vec3<f32>(0.0, 0.0, 0.0);
     var total_mass = 0.0;
     for (var i = 0; i < 4; i++) {
         com += voxel[i].x * voxel[i].mass;
@@ -304,11 +326,11 @@ fn coupled_tetrahedra_shape_matching(_voxel: array<Particle, 4>,
                     0.0, 0.0, 0.0);
     for (var i = 0; i < 4; i++) {
         let dx = voxel[i].x - com;
-        F += voxel[i].mass * outer_product(dx, rest_positions[i] - rest_com);
+        F += voxel[i].mass * outer_product(dx, rest_positions[i]);
     }
     F = F * q_inv;
 
-    var C_h = determinant(F) - 1.0;
+    var C_h = determinant(F) - 1.0;//material.gamma;
     var C_d = sqrt(trace(transpose(F) * F)) - sqrt(3.0);
     // Compute gradients
     let ch_fs = mat3x3<f32>(
@@ -340,20 +362,26 @@ fn coupled_tetrahedra_shape_matching(_voxel: array<Particle, 4>,
     A[1][1] += alpha[1];
 
     // Compute b vector
-    let b = vec2<f32>(-C_h, -C_d);
-        //   - vec2<f32>(lagrange_multiplier.lagrange_h * alpha[0], 
-        //               lagrange_multiplier.lagrange_d * alpha[1]);
+    let b = vec2<f32>(-C_h, -C_d)
+          - vec2<f32>(lagrange_multiplier.lagrange_h * alpha[0], 
+                      lagrange_multiplier.lagrange_d * alpha[1]);
 
     // Solve 2x2 linear system
     var x = solve_2x2_system(A, b);
 
+    if(abs(x[0]) < 1e-6) {
+        x[0] = 0.0;
+    }
+    if(abs(x[1]) < 1e-6) {
+        x[1] = 0.0;
+    }
 
     let delta_lambda = x;
     lagrange_multiplier.lagrange_h += delta_lambda[0];
     lagrange_multiplier.lagrange_d += delta_lambda[1];
 
     for (var i = 0; i < 4; i++) {
-        voxel[i].x += (lagrange_multiplier.lagrange_h * grad_C_h[i] + lagrange_multiplier.lagrange_d * grad_C_d[i]) / voxel[i].mass;
+        // voxel[i].x += (lagrange_multiplier.lagrange_h * grad_C_h[i] + lagrange_multiplier.lagrange_d * grad_C_d[i]) / voxel[i].mass;
     }
 
 
@@ -613,15 +641,15 @@ fn cube_voxel_shape_matching(@builtin(global_invocation_id) global_id: vec3<u32>
     }
     let q_inv = invert(Q);
 
-    let E = 8.0e13; // youngs modulus of rubber
+    let E = 8.0e5; // youngs modulus of rubber
     let nu = 0.4; // poissons ratio of rubber
     let mu = E / (2.0 * (1.0 + nu));
     let lambda = (E * nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
     let material = NeoHookean(lambda, mu, 1.0 + (mu / lambda));
 
     var lm = LagrangeMultipliers(0.0, 0.0);
-    // var result = coupled_neohookean_shape_matching(voxel, rest_positions, volume, q_inv, material, voxel_index, lm);
-    // voxel = result.voxel;
+    var result = coupled_neohookean_shape_matching(voxel, rest_positions, volume, q_inv, material, voxel_index, lm);
+    voxel = result.voxel;
     // var result = shape_matching(voxel, rest_positions, volume, q_inv, material, voxel_index, lm);
     // var result = coupled_neohookean_shape_matching(voxel, rest_positions, volume, q_inv, material, voxel_index, lm);
     // for (var i: u32 = 0; i < 4; i++) {
@@ -631,66 +659,56 @@ fn cube_voxel_shape_matching(@builtin(global_invocation_id) global_id: vec3<u32>
     // let material = Hookean(E, nu);
     // var result = decoupled_hookean_shape_matching(voxel, rest_positions, volume, q_inv, material, u32(0), lm);
 
-    let flip_x = 1u;
-    let flip_y = 2u;
-    let flip_z = 4u;
-    var tet_indices = array<array<u32, 4>, 5>(
-        array<u32, 4>(0, flip_x ^ flip_y, flip_y ^ flip_z, flip_x ^ flip_z),
-        // array<u32, 4>(flip_x, flip_x ^ flip_y ^ flip_z, flip_z, flip_y),
-        array<u32, 4>(0, flip_x, flip_x ^ flip_z, flip_x ^ flip_y),
-        array<u32, 4>(0, flip_x ^ flip_y, flip_y ^ flip_z, flip_y),
-        array<u32, 4>(flip_x ^ flip_y, flip_x ^ flip_z, flip_y ^ flip_z, flip_x ^ flip_y ^ flip_z),
-        array<u32, 4>(0, flip_y ^ flip_z, flip_x ^ flip_z, flip_z),
-    );
+    // var tet_indices = array<array<u32, 4>, 5>(
+    //     // array<u32, 4>(0, 1, 2, 4),
+    //     // array<u32, 4>(1, 2, 3, 7),
+    //     // array<u32, 4>(1, 5, 7, 4),
+    //     // array<u32, 4>(6, 2, 7, 4),
+    //     array<u32, 4>(1, 2, 4, 7),
+    //     array<u32, 4>(0, 3, 5, 6),
+    //     array<u32, 4>(0, 1, 2, 3),
+    //     array<u32, 4>(4, 7, 5, 6),
+    //     array<u32, 4>(2, 3, 1, 7),
+    // );
 
+    // for (var i: u32 = 0; i < 5; i++) {
+    //     var idxs = tet_indices[i];
+    //     var tet_particles = array<Particle, 4>(
+    //         voxel[idxs[0]],
+    //         voxel[idxs[1]],
+    //         voxel[idxs[2]],
+    //         voxel[idxs[3]],
+    //     );
+    //     var tet_rest_positions = array<vec3<f32>, 4>(
+    //         rest_positions[idxs[0]],
+    //         rest_positions[idxs[1]],
+    //         rest_positions[idxs[2]],
+    //         rest_positions[idxs[3]],
+    //     );
 
-    for (var i: u32 = 0; i < 5; i++) {
-        var idxs = tet_indices[i];
-        var tet_particles = array<Particle, 4>(
-            voxel[idxs[0]],
-            voxel[idxs[1]],
-            voxel[idxs[2]],
-            voxel[idxs[3]],
-        );
-        var tet_rest_positions = array<vec3<f32>, 4>(
-            rest_positions[idxs[0]],
-            rest_positions[idxs[1]],
-            rest_positions[idxs[2]],
-            rest_positions[idxs[3]],
-        );
+    //     // Compute the volume of the tetrahedron
+    //     let edge1 = tet_rest_positions[1] - tet_rest_positions[0];
+    //     let edge2 = tet_rest_positions[2] - tet_rest_positions[0];
+    //     let edge3 = tet_rest_positions[3] - tet_rest_positions[0];
+    //     let tet_volume = abs(dot(edge1, cross(edge2, edge3))) / 6.0;
+    //     let total_volume_frac = tet_volume / volume;
+    //     var Q = mat3x3<f32>(
+    //         0.0, 0.0, 0.0,
+    //         0.0, 0.0, 0.0,
+    //         0.0, 0.0, 0.0,
+    //     );
+    //     for (var j = 0; j < 4; j++) {
+    //         Q +=  tet_particles[j].mass * outer_product(tet_rest_positions[j], tet_rest_positions[j]);
+    //     }
+    //     let q_inv = invert(Q);
+    //     lm = LagrangeMultipliers(0.0, 0.0);
 
-        var rest_com = vec3<f32>(0.0, 0.0, 0.0);
-        for (var j = 0; j < 4; j++) {
-            rest_com += tet_rest_positions[j];
-        }
-        rest_com /= 4.0;
-        for (var j = 0; j < 4; j++) {
-            tet_rest_positions[j] -= rest_com;
-        }
-
-        // Compute the volume of the tetrahedron
-        let edge1 = tet_rest_positions[1] - tet_rest_positions[0];
-        let edge2 = tet_rest_positions[2] - tet_rest_positions[0];
-        let edge3 = tet_rest_positions[3] - tet_rest_positions[0];
-        let tet_volume = abs(dot(edge1, cross(edge2, edge3))) / 6.0;
-        let total_volume_frac = tet_volume / volume;
-        var Q = mat3x3<f32>(
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-        );
-        for (var j = 0; j < 4; j++) {
-            Q +=  tet_particles[j].mass * outer_product(tet_rest_positions[j], tet_rest_positions[j]);
-        }
-        let q_inv = invert(Q);
-        lm = LagrangeMultipliers(0.0, 0.0);
-
-        var result = coupled_tetrahedra_shape_matching(tet_particles, tet_rest_positions, tet_volume, q_inv, material, voxel_index * 2 + i, lm);
-        voxel[idxs[0]] = result.voxel[0];
-        voxel[idxs[1]] = result.voxel[1];
-        voxel[idxs[2]] = result.voxel[2];
-        voxel[idxs[3]] = result.voxel[3];
-    }
+    //     var result = coupled_tetrahedra_shape_matching(tet_particles, tet_rest_positions, tet_volume, q_inv, material, voxel_index, lm);
+    //     voxel[idxs[0]] = result.voxel[0];
+    //     voxel[idxs[1]] = result.voxel[1];
+    //     voxel[idxs[2]] = result.voxel[2];
+    //     voxel[idxs[3]] = result.voxel[3];
+    // }
 
     for (var i: u32 = 0; i < 8; i++) {
         particles[voxel_index * 8 + i] = voxel[i];
@@ -701,9 +719,9 @@ fn cube_voxel_shape_matching(@builtin(global_invocation_id) global_id: vec3<u32>
 fn apply_face_constraint(_face_constraint: FaceConstraint, constraint_id: u32) {    
     var face_constraint = _face_constraint;
     // Load particles referred by the face constraint
-    var voxel: array<Particle, 8>;
+    var face_particles: array<Particle, 8>;
     for (var i = 0u; i < 8u; i++) {
-        voxel[i] = particles[face_constraint.particle_indices[i]];
+        face_particles[i] = particles[face_constraint.particle_indices[i]];
     }
 
     // Treat these particles as a voxel and run shape matching
@@ -722,7 +740,7 @@ fn apply_face_constraint(_face_constraint: FaceConstraint, constraint_id: u32) {
     let volume = rest_length * rest_length * rest_length;
     let q_inv = uniforms.inv_q;
 
-    let E = 8.0e13; // youngs modulus of rubber
+    let E = 8.0e5; // youngs modulus of rubber
     let nu = 0.4; // poissons ratio of rubber
     let mu = E / (2.0 * (1.0 + nu));
     let lambda = (E * nu) / ((1.0 + nu) * (1.0 - 2.0 * nu));
@@ -730,7 +748,7 @@ fn apply_face_constraint(_face_constraint: FaceConstraint, constraint_id: u32) {
 
     var lm = LagrangeMultipliers(0.0, 0.0);
     // var result = shape_matching(face_particles, rest_positions, volume, q_inv, material, u32(0), lm);
-    // var result = coupled_neohookean_shape_matching(voxel, rest_positions, volume, q_inv, material, u32(constraint_id + uniforms.num_voxels), lm);
+    var result = coupled_neohookean_shape_matching(face_particles, rest_positions, volume, q_inv, material, u32(constraint_id + uniforms.num_voxels), lm);
     // for (var i: u32 = 0; i < 4; i++) {
     //     result = coupled_neohookean_shape_matching(result.voxel, rest_positions, volume, q_inv, material, u32(constraint_id + uniforms.num_voxels), lm);
     //     lm = result.lagrange_multiplier;
@@ -741,73 +759,8 @@ fn apply_face_constraint(_face_constraint: FaceConstraint, constraint_id: u32) {
     // let material = Hookean(E, nu);
     // var result = decoupled_hookean_shape_matching(face_particles, rest_positions, volume, q_inv, material, u32(0), lm);
     // Update the original particles with the shape-matched results
-    
-    
-    let flip_x = 1u;
-    let flip_y = 2u;
-    let flip_z = 4u;
-      var tet_indices = array<array<u32, 4>, 5>(
-        array<u32, 4>(0, flip_x ^ flip_y, flip_y ^ flip_z, flip_x ^ flip_z),
-        // array<u32, 4>(flip_x, flip_x ^ flip_y ^ flip_z, flip_z, flip_y),
-        array<u32, 4>(0, flip_x, flip_x ^ flip_z, flip_x ^ flip_y),
-        array<u32, 4>(0, flip_x ^ flip_y, flip_y ^ flip_z, flip_y),
-        array<u32, 4>(flip_x ^ flip_y, flip_x ^ flip_z, flip_y ^ flip_z, flip_x ^ flip_y ^ flip_z),
-        array<u32, 4>(0, flip_y ^ flip_z, flip_x ^ flip_z, flip_z),
-    );
-
-
-
-    for (var i: u32 = 0; i < 5; i++) {
-        var idxs = tet_indices[i];
-        var tet_particles = array<Particle, 4>(
-            voxel[idxs[0]],
-            voxel[idxs[1]],
-            voxel[idxs[2]],
-            voxel[idxs[3]],
-        );
-        var tet_rest_positions = array<vec3<f32>, 4>(
-            rest_positions[idxs[0]],
-            rest_positions[idxs[1]],
-            rest_positions[idxs[2]],
-            rest_positions[idxs[3]],
-        );
-
-        var rest_com = vec3<f32>(0.0, 0.0, 0.0);
-        for (var j = 0; j < 4; j++) {
-            rest_com += tet_rest_positions[j];
-        }
-        rest_com /= 4.0;
-        for (var j = 0; j < 4; j++) {
-            tet_rest_positions[j] -= rest_com;
-        }
-
-        // Compute the volume of the tetrahedron
-        let edge1 = tet_rest_positions[1] - tet_rest_positions[0];
-        let edge2 = tet_rest_positions[2] - tet_rest_positions[0];
-        let edge3 = tet_rest_positions[3] - tet_rest_positions[0];
-        let tet_volume = abs(dot(edge1, cross(edge2, edge3))) / 6.0;
-        let total_volume_frac = tet_volume / volume;
-        var Q = mat3x3<f32>(
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-        );
-        for (var j = 0; j < 4; j++) {
-            Q +=  tet_particles[j].mass * outer_product(tet_rest_positions[j], tet_rest_positions[j]);
-        }
-        let q_inv = invert(Q);
-        lm = LagrangeMultipliers(0.0, 0.0);
-
-        var result = coupled_tetrahedra_shape_matching(tet_particles, tet_rest_positions, tet_volume, q_inv, material, (uniforms.num_voxels + constraint_id) * 2 + i, lm);
-        voxel[idxs[0]] = result.voxel[0];
-        voxel[idxs[1]] = result.voxel[1];
-        voxel[idxs[2]] = result.voxel[2];
-        voxel[idxs[3]] = result.voxel[3];
-    }
-
-
     for (var i = 0u; i < 8u; i++) {
-        particles[face_constraint.particle_indices[i]] = voxel[i];
+        particles[face_constraint.particle_indices[i]] = result.voxel[i];
     }
     // lagrange_multipliers[uniforms.num_voxels + constraint_id] = result.lagrange_multiplier;
 }
@@ -846,54 +799,35 @@ fn boundary_constraints(@builtin(global_invocation_id) global_id: vec3<u32>) {
         var collision = false;
 
         // Check for collision and correct position
-        if (particle.x[dim] < uniforms.boundary_min[dim]) {
+        if (particle.x[dim] < uniforms.boundary_min[dim] + epsilon) {
             particle.x[dim] = uniforms.boundary_min[dim] + epsilon;
             collision = true;
         } else if (particle.x[dim] > uniforms.boundary_max[dim] - epsilon) {
             particle.x[dim] = uniforms.boundary_max[dim] - epsilon;
             collision = true;
         }
-        if(particle.x_prev[dim] < uniforms.boundary_min[dim]) {
-            particle.x_prev[dim] = uniforms.boundary_min[dim] + epsilon;
-        } else if (particle.x_prev[dim] > uniforms.boundary_max[dim] - epsilon) {
-            particle.x_prev[dim] = uniforms.boundary_max[dim] - epsilon;
-        } else if (collision) {
-            // Calculate the current velocity
+
+        if (collision) {
+            // Calculate the normal vector
             var normal = vec3<f32>(0.0, 0.0, 0.0);
             normal[dim] = 1.0;
 
-            let current_velocity = (particle.x - particle.x_prev) / uniforms.h;
-            
-            // Reflect the velocity by the boundary
-            let reflected_velocity = current_velocity - 2.0 * dot(current_velocity, normal) * normal;
-            
-            // Apply restitution to dampen the reflected velocity
-            let damped_velocity = reflected_velocity * restitution;
-            
-            // Set x_prev such that (x - x_prev) / h will give the damped and reflected velocity
-            particle.x_prev = particle.x - damped_velocity * uniforms.h;
+            // Compute relative velocity in normal direction
+            let v_normal_mag = dot(particle.v, normal);
+
+            // Only adjust if moving into the boundary
+            if (v_normal_mag < 0.0) {
+                let v_normal = v_normal_mag * normal;
+                let v_tangent = particle.v - v_normal;
+
+                // Apply restitution and friction
+                let v_normal_new = -v_normal * restitution;
+                let v_tangent_new = v_tangent * (1.0 - friction);
+
+                // Update the particle's velocity
+                particle.v = v_normal_new + v_tangent_new;
+            }
         }
-        // if (collision) {
-        //     // Calculate the normal vector
-        //     var normal = vec3<f32>(0.0, 0.0, 0.0);
-        //     normal[dim] = 1.0;
-
-        //     // Compute relative velocity in normal direction
-        //     let v_normal_mag = dot(particle.v, normal);
-
-        //     // Only adjust if moving into the boundary
-        //     if (v_normal_mag < 0.0) {
-        //         let v_normal = v_normal_mag * normal;
-        //         let v_tangent = particle.v - v_normal;
-
-        //         // Apply restitution and friction
-        //         let v_normal_new = -v_normal * restitution;
-        //         let v_tangent_new = v_tangent * (1.0 - friction);
-
-        //         // Update the particle's velocity
-        //         particle.v = v_normal_new + v_tangent_new;
-        //     }
-        // }
     }
 
     particles[particle_index] = particle;
